@@ -23,7 +23,7 @@ likelihoodUnivariate = function(xCtrlAllGenes, xCase1AllGenes, prevalence1) {
     pi1 = params[["pi1"]]
     pi0 = 1 - pi1
     
-    if(pDiseasesGivenVariant >= 1 || pDiseasesGivenVariant <= 0 || pi1 <= 0 || pi1 >= 1) {
+    if(pDiseasesGivenVariant > 1 || pDiseasesGivenVariant < 0 || pi1 < 0 || pi1 > 1) {
       return(-Inf)
     }
     
@@ -98,6 +98,8 @@ likelihoodUnivariate = function(xCtrlAllGenes, xCase1AllGenes, prevalence1) {
 
 fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) {
   likelihoodFn = likelihoodUnivariate(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1 = prevalence1)
+  # r = likelihoodFn(list("pDiseaseGivenVariant"=0.1,"pi1"=.1))
+  # print(paste("example", r))
   results = list(ll = c(), par = c())
   minLLDiff = 1
   minLLThresholdCount = 5
@@ -109,7 +111,7 @@ fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) 
     fit = NULL
     tryCatch({
       fit = optim(par = list(pi1 = .00001, pDiseaseGivenVariant = pDiseasesGivenVariantInitiailGuess), fn = likelihoodFn,
-                  control=list(fnscale=-1, max_iter = 2000))#,
+                  control=list(fnscale=-1))#,
       #method="L-BFGS-B", lower=list(pDiseasesGivenVariant = .00000001), upper=list(pDiseasesGivenVariant = .9999999999))
     }, error = function(e) {
       print(paste("Couldn't evaluate with parameters: ", piInitialGuess, pDiseasesGivenVariantInitiailGuess, sep = " "))
@@ -150,14 +152,13 @@ fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) 
 }
 
 results = list(pDiseaseGivenVariant = c(), pi1 = c(), ll = c(), afShape = c(), afMean = c(), rrShape = c(), rrMean = c(), ctrlRRShape = c(), prevalence1 = c(), diseaseFraction = c())
-for(rrShape in c(1, 10, 20, 50, 100)) {
-  ctrlRRShape = 100
-  for(prevalence1 in c(.01, .05, .1)) {
-    for(rrMean in c(1, 2, 5, 10, 20, 50)) {
-      for(afMean in c(1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6)) {
-        for(afShape in c(1, 10, 20, 50, 100)) {
-          for(diseaseFraction in c(.01, .05, .1, .2)) {
-            print(paste("TESTING WITH:", "rrMean", rrMean, "rrShape", rrShape, "ctrlRRShape", ctrlRRShape, "afMean", afMean, "afShape", afShape, "diseaseFraction", diseaseFraction, "prevalence1", prevalence1))
+for(rrShape in c(10)) {
+  for(prevalence1 in c(.01)) {
+    for(rrMean in c(10)) {
+      for(afMean in c(1e-4)) {
+        for(afShape in c(10)) {
+          for(diseaseFraction in c(.1)) {
+            print(paste("TESTING WITH:", "rrMean", rrMean, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFraction", diseaseFraction, "prevalence1", prevalence1))
             nGenes = 20000
             
             nCase1 = 1000
@@ -178,7 +179,7 @@ for(rrShape in c(1, 10, 20, 50, 100)) {
                 if(i <= (nGenes*diseaseFraction)){
                   rrGenes[i] = rgamma(1, shape = rrShape, rate  = rrShape/rrMean)
                 }else{
-                  rrGenes[i] = rgamma(1, shape = ctrlRRShape, rate = ctrlRRShape)
+                  rrGenes[i] = rgamma(1, shape = rrShape, rate = rrShape)
                 }
                 
                 pVariantsGivenDisease1ByGene[i] = probVariantGivenDisease(rrGenes[i], afGenes[i])
@@ -188,6 +189,8 @@ for(rrShape in c(1, 10, 20, 50, 100)) {
                 ctrl1AlleleCountsByGene[i] = rbinom(1, nCtrl1, pVariantsGivenNoDiseaseByGene[i])
               }
               
+              print(paste("case afs", mean(pVariantsGivenDisease1ByGene), "in enriched only:", mean(pVariantsGivenDisease1ByGene[0:2000]), "in non-enriched", mean(pVariantsGivenDisease1ByGene[2000:length(pVariantsGivenDisease1ByGene)]), "case counts", case1AlleleCountsByGene[0:10], "ctrl counts", ctrl1AlleleCountsByGene[0:10]))
+              
               res = fitFn(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1 = prevalence1)
               maxIdx = which(res$ll == max(res$ll))
               maxLL = res$ll[maxIdx]
@@ -196,9 +199,7 @@ for(rrShape in c(1, 10, 20, 50, 100)) {
               if(!is.null(maxPar)) {
                 results$diseaseFraction = append(results$diseaseFraction, diseaseFraction)
                 results$prevalence1 = append(results$prevalence1, prevalence1)
-                
-                results$ctrlRRShape = append(results$ctrlRRShape, ctrlRRShape)
-                
+
                 results$rrShape = append(results$rrShape, rrShape)
                 results$rrMean = append(results$rrMean, rrMean)
                 
@@ -218,6 +219,7 @@ for(rrShape in c(1, 10, 20, 50, 100)) {
     }
   }
 }
+
 
 rgamma(1, shape = 100, rate = 100)
 floor(xfit)
