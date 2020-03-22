@@ -111,6 +111,8 @@ fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) 
   thresholdHitCount = 0
   nEpochs = 100
   for(i in 1:nEpochs) {
+    
+    ptm <- proc.time()
     piInitialGuess = rand(n = 1)[[1]]
     pDiseasesGivenVariantInitiailGuess = rand(n = 1)[[1]]
     fit = NULL
@@ -128,6 +130,8 @@ fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) 
       print(fit)
       next
     }
+    
+    print(paste("took", proc.time() - ptm))
     
     if(length(results$ll) == 0) {
       results$ll = append(results$ll, fit$value)
@@ -197,6 +201,7 @@ for(rrShape in c(10)) {
               print(paste("case afs", mean(pVariantsGivenDisease1ByGene), "in enriched only:", mean(pVariantsGivenDisease1ByGene[0:2000]), "in non-enriched", mean(pVariantsGivenDisease1ByGene[2000:length(pVariantsGivenDisease1ByGene)]), "case counts", case1AlleleCountsByGene[0:10], "ctrl counts", ctrl1AlleleCountsByGene[0:10]))
               
               res = fitFn(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1 = prevalence1)
+
               maxIdx = which(res$ll == max(res$ll))
               maxLL = res$ll[maxIdx]
               maxPar = res$par[maxIdx]
