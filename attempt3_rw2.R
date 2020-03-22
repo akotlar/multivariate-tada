@@ -14,7 +14,12 @@ probVariantGivenNotDisease = function(prevalence, pVariant, pVariantGivenDisease
 
 likelihoodUnivariateSingleGene = function(xCtrl, xCase1, prevalence1, pi0, pi1, pDiseaseGivenVariant) {
   n = xCtrl + xCase1
-  pi0 * dbinom(x = xCase1, size = n, p = prevalence1) + pi1 * dbinom(x = xCase1, size = n, p = pDiseaseGivenVariant) 
+  log(pi0 * dbinom(x = xCase1, size = n, p = prevalence1) + pi1 * dbinom(x = xCase1, size = n, p = pDiseaseGivenVariant))
+}
+
+likelihoodUnivariateSingleGeneJensen = function(xCtrl, xCase1, prevalence1, pi0, pi1, pDiseaseGivenVariant) {
+  n = xCtrl + xCase1
+  pi0 * log(dbinom(x = xCase1, size = n, p = prevalence1)) + pi1 * log(dbinom(x = xCase1, size = n, p = pDiseaseGivenVariant) )
 }
 
 likelihoodUnivariate = function(xCtrlAllGenes, xCase1AllGenes, prevalence1) {
@@ -36,16 +41,16 @@ likelihoodUnivariate = function(xCtrlAllGenes, xCase1AllGenes, prevalence1) {
         next
       }
       # likelihoodUnivariateSingleGene = function(xCtrl, xCase1, prevalence1, pi0, pi1, pDiseaseGivenVariant)
-      like = likelihoodUnivariateSingleGene(ctrlCount, caseCount, prevalence1, pi0, pi1, pDiseasesGivenVariant)
-      
-      if(is.nan(like) || like == 0) {
-        print(paste("pi1", pi1, "pDiseasesGivenVariant", pDiseasesGivenVariant, "gene", i, "ctrlCount", ctrlCount, "caseCount", caseCount, "res:", likelihood, "log likelihood:",log(like), sep=" "))
+      ll = likelihoodUnivariateSingleGene(ctrlCount, caseCount, prevalence1, pi0, pi1, pDiseasesGivenVariant)
+      # print(paste("ll", ll))
+      if(is.nan(ll) || is.infinite(ll)) {
+        print(paste("pi1", pi1, "pDiseasesGivenVariant", pDiseasesGivenVariant, "gene", i, "ctrlCount", ctrlCount, "caseCount", caseCount, "res:", likelihood, "log likelihood:",ll, sep=" "))
         #return(-Inf)
         penaltyCount = penaltyCount - 1
         next
       }
       # print(paste("ctrlCount", ctrlCount, "caseCount", caseCount, "res:", likelihood, "log likelihood:",log(likelihood), sep=" "))
-      likelihood = likelihood + log(like)
+      likelihood = likelihood + ll
     }
     
     if(penaltyCount == 0) {
@@ -98,8 +103,8 @@ likelihoodUnivariate = function(xCtrlAllGenes, xCase1AllGenes, prevalence1) {
 
 fitFn = function(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1) {
   likelihoodFn = likelihoodUnivariate(ctrl1AlleleCountsByGene, case1AlleleCountsByGene, prevalence1 = prevalence1)
-  # r = likelihoodFn(list("pDiseaseGivenVariant"=0.1,"pi1"=.1))
-  # print(paste("example", r))
+  r = likelihoodFn(list("pDiseaseGivenVariant"=0.11094360,"pi1"=0.08845797))
+  print(paste("example", r))
   results = list(ll = c(), par = c())
   minLLDiff = 1
   minLLThresholdCount = 5
@@ -233,3 +238,5 @@ lines(xfit , y = yfit, col = "blue" , lty = 2 , lwd = 2 )
 # c(unlist(true_param), loglik=tst(true_param))
 
 # optim(par = list(pi1 = piInitialGuess, pDiseaseGivenVariant = .0001), fn = likelihoodFn, control=list(fnscale=-1, max_iter = 2000))
+
+log(likelihoodUnivariateSingleGene(xCtrl = 10, xCase1 = 1, prevalence1 = .01, pi0 = .9, pi1 = .1, pDiseaseGivenVariant = .001))
