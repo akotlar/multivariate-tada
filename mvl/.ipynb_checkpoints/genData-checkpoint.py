@@ -3,7 +3,7 @@ import torch
 import torch.tensor as tensor
 import pyro.distributions as dist
 # from torch.distributions import Binomial, Gamma, Uniform
-from pyro.distributions import Binomial, Bernoulli, Categorical, Dirichlet, DirichletMultinomial, Beta, BetaBinomial, Uniform, Gamma, Multinomial
+from pyro.distributions import Binomial, Bernoulli, Categorical, Dirichlet, DirichletMultinomial, Beta, BetaBinomial, Uniform, Gamma, Multinomial, MultivariateNormal as MVN
 
 import numpy as np
 
@@ -15,6 +15,8 @@ from matplotlib import pyplot
 from collections import namedtuple
 
 from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD
+from pyper import *
+
 print("IN")
 import time
 seed = 0
@@ -232,7 +234,7 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll }
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-def v6normalrr(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000):
+def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
     
@@ -241,13 +243,21 @@ def v6normalrr(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, 
     altCounts = []
     probs = []
     afDist = Gamma(concentration=afShape,rate=afShape/afMean)
-    rrDist = Gamma(concentration=rrShape,rate=rrShape/rrMeans)
-    print("rrDist mean", rrDist.sample([10_000,]).mean(0))
-#     rrNullDist = Gamma(concentration=rrShape,rate=rrShape.expand(nConditions))
     
+    r=R(use_pandas=True)
+    r(f'''
+        library(tmvtnorm)
+        sigma <- matrix(c(1,.4,.4, .4, 1, .4 , .4, .4, 1), ncol=3)
+        rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
+        sigma <- matrix(c(1, 0, 0, 1), ncol=2)
+        rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
+      ''')
+    rrsShared = tensor(r.get('rrsShared'))
+    rrsOne = tensor(r.get('rrsOne'))
+    print(rrsShared)
+
     # shape == [nGenes, nConditions]
-    afs = afDist.sample([nGenes,])   
-    rrs = rrDist.sample([nGenes,])
+    afs = afDist.sample([nGenes,])
 
     endIndices = nGenes * diseaseFractions
     startIndices = []
@@ -291,42 +301,32 @@ def v6normalrr(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, 
                 break
         
         assert(affects <= 3)
-        # gene affects one of 3 states
-        # based on which state it affects, sampleCase1, samplesCase2, samplesBoth get different rrs for this gene
-        # controls always get the same value, and that is based on 1 - sum(rrs)
         if affects == 0:
             unaffectedGenes.append(geneIdx)
         elif affects == 1:
-#             print(f"affects1: {geneIdx}")
-            rrSamples[0] = rrs[geneIdx, 0]
-            rrSamples[2] = rrSamples[0]
+            # TODO: do we need to have 0 correlation between rrSamples[0] and rrSampels[2]
+            rrSamples[0] = rrsOne[geneIdx, 0]
+            rrSamples[2] = rrSamples[0] 
         elif affects == 2:
-#             print(f"affects2: {geneIdx}")
-            rrSamples[1] = rrs[geneIdx, 1]
+            rrSamples[1] = rrsOne[geneIdx, 1]
             rrSamples[2] = rrSamples[1]
         elif affects == 3:
-#             print(f"affects2: {geneIdx}")
-            rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
-            rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
-            rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
+            rrSamples = rrsShared[geneIdx]
+        
 #         print("affects", affects, "rrSamples", rrSamples)
+
         probVgivenDs = pVgivenDapprox(rrSamples, afs[geneIdx])
         probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
         
         p=tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
         
         totalProbability = p.sum()
-#         print("af", afs[geneIdx], "probVgivenDs", probVgivenDs, "pDs", pDs, "probVgivenNotD", probVgivenNotD, "totalProbability", totalProbability)
-#         print("abs(totalProbability-afs[geneIdx]) / afs[geneIdx]", abs(totalProbability-afs[geneIdx]) / afs[geneIdx])
+        
         assert (abs(totalProbability-afs[geneIdx]) / afs[geneIdx]) <= 1e-6
         marginalAlleleCount = int(totalProbability * totalSamples)
-#         print("marginal allele count", marginalAlleleCount)
-        
-#         print("probs", probs)
-        # without .numpy() can't later convert tensor(altCounts) : "only tensors can be converted to Python scalars"
+
         altCountsGene = Multinomial(probs=p, total_count=marginalAlleleCount).sample().numpy()
-        
-#         print("altCountsGene", altCountsGene)
+
         altCounts.append(altCountsGene)
         probs.append(p.numpy())
         rrAll.append(rrSamples)
@@ -569,13 +569,8 @@ def flattenAltCounts(altCounts, afs):
     
     return altCountsFlatPooled, afsFlatPooled, flattenedData
 
-def genParams(pis = tensor([.1, .1, .05]), rrShape = tensor(10.), rrMeans = tensor([3., 3., 1.5]), afShape = tensor(10.), afMean = tensor(1e-4)):
+def genParams(pis = tensor([.1, .1, .05]), rrShape = tensor(10.), rrMeans = tensor([3., 3., 1.5]), afShape = tensor(10.), afMean = tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5)):
     nGenes = 20_000
-
-    nCtrls = tensor(5e5)
-    nCasesAffectedByOne = tensor([5e3, 5e3])
-    nBothCases = nCasesAffectedByOne.sum() * .1
-    nCases = tensor([*nCasesAffectedByOne, nBothCases])
 
     pDs = nCases / ( nCases.sum() + nCtrls )
     print("pDs are:", pDs)
