@@ -233,10 +233,11 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll }
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000):
+def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000,
+             covShared=tensor([[1,.4,.4], [.4, 1, .4], [.4, .4, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
-    
+    print("\n\ntest tensor",",".join(covShared.numpy().flatten()))
     nConditions = len(nCases)
     assert(nConditions == 3)
     altCounts = []
@@ -246,9 +247,9 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
     r=R(use_pandas=True)
     r(f'''
         library(tmvtnorm)
-        sigma <- matrix(c(1,.4,.4, .4, 1, .4 , .4, .4, 1), ncol=3)
+        sigma <- matrix(c({",".join(torch.flatten(covShared))}), ncol={len(covShared)})
         rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
-        sigma <- matrix(c(1, 0, 0, 1), ncol=2)
+        sigma <- matrix(c({",".join(torch.flatten(covSingle))}), ncol={len(covSingle)})
         rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
       ''')
     rrsShared = tensor(r.get('rrsShared'))

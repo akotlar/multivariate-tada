@@ -168,10 +168,8 @@ def fitFnBivariateMT(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 1
     
 # TODO: maybe beta distribution should be constrained such that variance is that of the data?
 # or maybe there's an analog to 0 mean liability variance
-import sys
-def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0, method = "nelder-mead"):
-    print("in")
 
+def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0, method = "nelder-mead"):
     print("method", method)
 
     costFn = likelihoodBivariateFast(altCountsByGene, pDs)
@@ -215,7 +213,7 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100
                 bestParams = fnArgs
         
         print(f"best ll: {best}, bestParams: {bestParams}")
-        sys.stdout.flush()
+
         start = time.time()
 #         fnArgs = [probs[0], probs[1], probs[2], *alphas]
         if method == "nelder-mead":

@@ -3,7 +3,7 @@ import torch
 import torch.tensor as tensor
 # import pyro.distributions as dist
 from torch.distributions import Binomial, Gamma, Uniform
-from pyro.distributions import Multinomial
+from pyro.distributions import Multinomial, Dirichlet
 
 import numpy as np
 
@@ -17,7 +17,6 @@ from collections import namedtuple
 from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT
 from pyper import *
 
-print("IN")
 import time
 seed = 0
 
@@ -234,10 +233,11 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll }
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000):
+def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000,
+             covShared=tensor([[1,.4,.4], [.4, 1, .4], [.4, .4, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
-    
+    print("\n\ntest tensor",",".join(covShared.numpy().flatten()))
     nConditions = len(nCases)
     assert(nConditions == 3)
     altCounts = []
@@ -247,9 +247,9 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
     r=R(use_pandas=True)
     r(f'''
         library(tmvtnorm)
-        sigma <- matrix(c(1,.4,.4, .4, 1, .4 , .4, .4, 1), ncol=3)
+        sigma <- matrix(c({",".join(torch.flatten(covShared))}), ncol={len(covShared)})
         rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
-        sigma <- matrix(c(1, 0, 0, 1), ncol=2)
+        sigma <- matrix(c({",".join(torch.flatten(covSingle))}), ncol={len(covSingle)})
         rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
       ''')
     rrsShared = tensor(r.get('rrsShared'))
@@ -653,14 +653,24 @@ def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]), nCa
                 affectedGenesRun = resPointer["affectedGenes"]
                 unaffectedGenesRun = resPointer["unaffectedGenes"]
 
-                runCostFnIdx = 16
+                runCostFnIdx = 0
                 print("fit method is", fitMethod)
                 start = time.time()
                 if mt is True:
                     res = fitFnBivariateMT(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
+                    bestRes = None
+                    bestLL = None
+                    for r in res:
+                        print("r:", r)
+                        if bestLL is None or r["lls"][-1] < bestLL:
+                            bestRes = r["params"][-1]
+                            bestLL = r["lls"][-1]
+                    print("bestLL", bestLL)
+                    print("bestRes", bestRes)
                 else:
+                    # res here I think is different htan multi case
                     res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
-                bestRes = res["params"][-1]
+                    bestRes = res["params"][-1]
                 print("took", time.time() - start)
 
                 inferredPis = tensor(bestRes[0:3]) # 3-vector
@@ -668,13 +678,13 @@ def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]), nCa
 
                 #### Calculate actual ###
                 component1Afs = afsRun[affectedGenesRun[0]]
-                c1true = (component1Afs / afMeanRun).mean(0)
+                c1true = (component1Afs / afMean).mean(0)
 
                 component2Afs = afsRun[affectedGenesRun[1]]
-                c2true = (component2Afs / afMeanRun).mean(0)
+                c2true = (component2Afs / afMean).mean(0)
 
                 componentBothAfs = afsRun[affectedGenesRun[2]]
-                cBothTrue = (componentBothAfs / afMeanRun).mean(0)
+                cBothTrue = (componentBothAfs / afMean).mean(0)
 
                 ### calculate inferred values
                 pds = tensor([1-pDsRun.sum(), *pDsRun])
@@ -694,7 +704,7 @@ def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]), nCa
 
                 resToStore = copy.deepcopy(resSim)
                 resToStore["allRes"] = res
-                resToStore["nEpochs"] = nEpochsRun
+                resToStore["nEpochs"] = nEpochs
                 br = resToStore["bestRes"]
                 br["pis"] = inferredPis
                 br["alphas"] = inferredAlphas
