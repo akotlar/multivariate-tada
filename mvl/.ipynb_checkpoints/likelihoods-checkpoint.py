@@ -3,7 +3,7 @@ import torch
 import torch.tensor as tensor
 import pyro.distributions as dist
 # from torch.distributions import Binomial, Gamma, Uniform
-from pyro.distributions import Binomial, Bernoulli, Categorical, Dirichlet, DirichletMultinomial, Beta, BetaBinomial, Uniform, Gamma, Multinomial
+from pyro.distributions import Binomial, Bernoulli, Categorical, Dirichlet, DirichletMultinomial, Beta, BetaBinomial, Uniform, Gamma, Multinomial, Gamma
 
 import numpy as np
 
@@ -856,7 +856,7 @@ def likelihoodBivariateFast(altCountsByGene, pDs):
         
         h3 = piBoth * torch.exp( DirichletMultinomial(total_count=n, concentration=tensor([alpha0, aBoth1, aBoth2, aBothBoth])).log_prob(altCountsFlat) )
 
-        return -torch.log( h0 + h1 + h2 + h3 ).sum()
+        return -torch.log( h0 + h1 + h2 + h3 ).sum().numpy()
 
     return likelihood1, likelihood1a, likelihood1b, likelihood2, likelihood2a, likelihood2b, likelihood2c, likelihood2d, likelihood2e, likelihood2f, likelihood2g, likelihood2h, likelihood2i, likelihood2j, likelihood2k, likelihood2l, likelihood2m, likelihood2lSparse
 
@@ -1032,11 +1032,110 @@ def fitFnUniveriateBetaBinomial(altCountsByGene, pDs, nEpochs = 100, minLLThresh
             
     return {"lls": lls, "params": params, "llTrajectory": llsAll}
 
+# https://pymotw.com/2/multiprocessing/communication.html
+class Consumer(torch.multiprocessing.Process):
+    
+    def __init__(self, task_queue, result_queue):
+        torch.multiprocessing.Process.__init__(self)
+        self.task_queue = task_queue
+        self.result_queue = result_queue
+
+    def run(self):
+        proc_name = self.name
+        while True:
+            next_task = self.task_queue.get()
+            if next_task is None:
+                # Poison pill means shutdown
+                print('%s: Exiting' % proc_name)
+                self.task_queue.task_done()
+                break
+            print('%s: %s' % (proc_name, next_task))
+            answer = next_task()
+            self.task_queue.task_done()
+            self.result_queue.put(answer)
+        return
+
+
+class Task(object):
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+    def __call__(self):
+        print("calling")
+        return fitFnBivariate(*self.args, **self.kwargs)
+
+from joblib import Parallel, delayed
+
+from torch.multiprocessing import Process, Queue, Pool, Manager
+
+# def writer(i,*args):
+#     message = f"I am Process {i}"
+#     r = fitFnBivariate(*args)
+#     print("r is", r)
+#     q.put(r)
+# def reader(i,q):
+#     message = q.get()
+#     print("got message", message)
+    
+def fitFnBivariateMT(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0, method = "nelder-mead"):
+    # Create manager
+    m = Manager()
+    # Create multiprocessing queue
+    q = m.Queue()
+    # Create a group of parallel writers and start them
+    for i in range(10):
+        Process(target=fitFnBivariate, args=(altCountsByGene, pDs, 1, minLLThresholdCount, K, debug, costFnIdx, method)).start()
+    # Create multiprocessing pool
+#     p = Pool(10)
+    # Create a group of parallel readers and start them
+    # Number of readers is matching the number of writers
+    # However, the number of simultaneously running
+    # readers is constrained to the pool size
+#     readers = []
+#     for i in range(10):
+#         readers.append(p.apply_async(reader, (i,q,)))
+#     # Wait for the asynchrounous reader threads to finish
+#     [r.get() for r in readers]
+    
+    
+    
+#     # Establish communication queues
+#     tasks = torch.multiprocessing.JoinableQueue()
+#     results = torch.multiprocessing.Queue()
+    
+#     # Start consumers
+#     num_consumers = torch.multiprocessing.cpu_count()
+#     print('Creating %d consumers' % num_consumers)
+#     consumers = [ Consumer(tasks, results)
+#                   for i in range(num_consumers) ]
+#     for w in consumers:
+#         w.start()
+    
+#     # Enqueue jobs
+#     for i in range(nEpochs):
+#         tasks.put(Task(altCountsByGene, pDs, 1, minLLThresholdCount, K, debug, costFnIdx, method))
+    
+#     # Add a poison pill for each consumer
+#     for i in range(nEpochs):
+#         tasks.put(None)
+
+#     # Wait for all of the tasks to finish
+#     tasks.join()
+    
+#     # Start printing results
+#     while nEpochs:
+#         result = results.get()
+#         print('Result:', result)
+#         num_jobs -= 1
+
 # TODO: maybe beta distribution should be constrained such that variance is that of the data?
 # or maybe there's an analog to 0 mean liability variance
-def fitFnBivariate(altCountsByGene, pDs, nEpochs = 100, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0):
+def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0, method = "nelder-mead"):
+    scipy.random.seed()
+    print("method", method)
+
     costFunctions = likelihoodBivariateFast(altCountsByGene, pDs)
-        
+    assert(method == "nelder-mead" or method == "annealing" or method == "basinhopping")
     costFn = costFunctions[costFnIdx]
     print("past", costFn)
     llsAll = []
@@ -1051,7 +1150,11 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 100, minLLThresholdCount = 10
     # pDgivenV can't be smaller than this assuming allele freq > 1e-6 and rr < 100
     # P(V|D) * P(D) / P(V)
     pi0Dist = Uniform(.5, 1)
-    alphasDist = Uniform(100, 25000)    
+    alphasDist = Uniform(100, 25000)
+    
+    if method != "nelder-mead":
+        nEpochs = 1
+
     for i in range(nEpochs):
         # TODO: should we constrain alpha0 to the pD, i.e
         # E[P(D)] = alpha1 / sum(alphasRes)
@@ -1063,7 +1166,7 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 100, minLLThresholdCount = 10
             pis = Uniform(1/nGenes, 1-pi0).sample([K-1])
             pis = pis/(pis.sum() + pi0)
 #             print("pi0", pi0, "pis", pis, "sum", pis.sum())
-            fnArgs = [*pis, *alphasDist.sample([K,])]
+            fnArgs = [*pis.numpy(), *alphasDist.sample([K,]).numpy()]
 
             ll = costFn(fnArgs)
             if ll < best:
@@ -1071,10 +1174,15 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 100, minLLThresholdCount = 10
                 bestParams = fnArgs
         
         print(f"best ll: {best}, bestParams: {bestParams}")
-
+        start = time.time()
 #         fnArgs = [probs[0], probs[1], probs[2], *alphas]
-        fit = scipy.optimize.minimize(costFn, x0 = bestParams, method='Nelder-Mead', options={"maxiter": 10000, "adaptive": True})
-
+        if method == "nelder-mead":
+            fit = scipy.optimize.minimize(costFn, x0 = bestParams, method='Nelder-Mead', options={"maxiter": 20000, "adaptive": True})
+        elif method == "annealing":
+            fit = scipy.optimize.dual_annealing(costFn, [(0.001, .999), (.001, .999), (.001, .999), (1, 25_000), (1, 25_000), (1, 25_000), (1, 25_000)])
+        elif method == "basinhopping":
+            fit = scipy.optimize.basinhopping(costFn, x0 = bestParams)
+        print("Epoch took", time.time() - start)
         if debug:
             print(f"epoch {i}")
             print(fit)
@@ -1122,7 +1230,6 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 100, minLLThresholdCount = 10
             break
             
     return {"lls": lls, "params": params, "llTrajectory": llsAll}
-
 
 
 def initBetaParams(mu, variance):
