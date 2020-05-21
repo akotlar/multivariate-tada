@@ -235,9 +235,11 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 # Like 6 but generates correlated relative risks by sampling from lognormal
 def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000,
              covShared=tensor([[1,.4,.4], [.4, 1, .4], [.4, .4, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
+    covSharedStr = ",".join([str(x) for x in covShared.view(-1).numpy()])
+    covSingleStr = ",".join([str(x) for x in covSingle.view(-1).numpy()])
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
-    print("\n\ntest tensor",",".join(covShared.numpy().flatten()))
+    print("\n\ntest tensor",covSharedStr)
     nConditions = len(nCases)
     assert(nConditions == 3)
     altCounts = []
@@ -247,9 +249,9 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
     r=R(use_pandas=True)
     r(f'''
         library(tmvtnorm)
-        sigma <- matrix(c({",".join(torch.flatten(covShared))}), ncol={len(covShared)})
+        sigma <- matrix(c({covSharedStr}), ncol={len(covShared)})
         rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
-        sigma <- matrix(c({",".join(torch.flatten(covSingle))}), ncol={len(covSingle)})
+        sigma <- matrix(c({covSingleStr}), ncol={len(covSingle)})
         rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
       ''')
     rrsShared = tensor(r.get('rrsShared'))
@@ -590,7 +592,12 @@ def genParams(pis = tensor([.1, .1, .05]), rrShape = tensor(10.), rrMeans = tens
 
 import copy
 
-def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]), nCases = tensor([15e3, 15e3, 6e3]), nCtrls = tensor(5e5), afMean = 1e-4, rrShape=tensor(50.), afShape=tensor(50.), generatingFn =  v6normal, fitMethod = 'annealing', nEpochs=20, mt = False):
+def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]),
+nCases = tensor([15e3, 15e3, 6e3]), nCtrls = tensor(3e5), afMean = 1e-4,
+rrShape=tensor(50.), afShape=tensor(50.), generatingFn =  v6normal,
+fitMethod = 'annealing', nEpochs=20, mt = False,
+covShared=tensor([[1,0,0], [0, 1, 0], [0, 0, 1]]),
+covSingle=tensor([[1, 0], [0, 1]])):
     resSim = {
             "allRes": None,
             "nEpochs": None,

@@ -76,7 +76,8 @@ def likelihoodBivariateFast(altCountsByGene, pDs):
             # ctrl count is first index of first condition, all other conditions get 0 count at 0th index
             altCountsFlat.append([altCountsByGene[geneIdx, 0, 0], *altCountsByGene[geneIdx, :, 1].flatten()])
 
-    altCountsFlat = tensor(altCountsFlat)
+        altCountsFlat = tensor(altCountsFlat)
+
     # nGenes x 4 
     xCtrl = altCountsFlat[:, 0]
     xCase1 = altCountsFlat[:, 1]
@@ -96,9 +97,9 @@ def likelihoodBivariateFast(altCountsByGene, pDs):
     case2Null = torch.exp(Binomial(total_count=n, probs=pd2).log_prob(xCase2))
     caseBothNull = torch.exp(Binomial(total_count=n, probs=pdBoth).log_prob(xCase12))
     allNull = case1Null * case2Null * caseBothNull
-    print("altCountsFlat", altCountsFlat)
+
     allNull2 = torch.exp(Multinomial(probs=tensor([1-pDs.sum(), pDs[0], pDs[1], pDs[2]])).log_prob(altCountsFlat))
-    print("allNull2", allNull2)
+
     print("pd1, pd2, pdBoth, pdCtrl", pd1, pd2, pdBoth, pdCtrl)
 
     def likelihood2m(params):
@@ -132,7 +133,7 @@ def likelihoodBivariateFast(altCountsByGene, pDs):
         
         h3 = piBoth * torch.exp( DirichletMultinomial(total_count=n, concentration=tensor([alpha0, aBoth1, aBoth2, aBothBoth])).log_prob(altCountsFlat) )
 
-        return -torch.log( h0 + h1 + h2 + h3 ).sum().numpy()
+        return -torch.log( h0 + h1 + h2 + h3 ).sum()
 
     return likelihood2m
 
@@ -170,10 +171,8 @@ def fitFnBivariateMT(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 1
 # or maybe there's an analog to 0 mean liability variance
 
 def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100, K = 4, debug = False, costFnIdx = 0, method = "nelder-mead"):
-    print("method", method)
-
     costFn = likelihoodBivariateFast(altCountsByGene, pDs)
-    print("past", costFn)
+    print("method", method, "costFn", costFn)
 
     assert(method == "nelder-mead" or method == "annealing" or method == "basinhopping")
     
@@ -190,9 +189,6 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs = 20, minLLThresholdCount = 100
     # P(V|D) * P(D) / P(V)
     pi0Dist = Uniform(.5, 1)
     alphasDist = Uniform(100, 25000)
-    
-    if method != "nelder-mead":
-        nEpochs = 1
 
     for i in range(nEpochs):
         # TODO: should we constrain alpha0 to the pD, i.e
