@@ -326,8 +326,6 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
         elif affects == 3:
             rrSamples = rrsShared[geneIdx]
 
-#         print("affects", affects, "rrSamples", rrSamples)
-
         probVgivenDs = pVgivenDapprox(rrSamples, afs[geneIdx])
         probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
 
@@ -706,10 +704,14 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=
             "PDV_cBothInferred": None,
         }
     }
-
-    start = time.time()
-    r = generatingFn(**paramsRun)
-    print("took", time.time() - start)
+   
+    try:
+        start = time.time()
+        r = generatingFn(**paramsRun)
+        print("took", time.time() - start)
+    except Exception as e:
+        print(f"Generating error: {e}")
+        return {"error": e.__str__()}
 
     resPointer = {
         **r,

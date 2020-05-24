@@ -92,7 +92,7 @@ def effectBothLikelihood(n, pDs, alpha0, alpha1, alpha2, alphaBoth, altCounts):
     return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
 
 def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
-    nGenes = altCountsByGene.shape[0]
+    nGenes = altCountsFlat.shape[0]
 
     # nGenes x 4
     xCtrl = altCountsFlat[:, 0]
@@ -131,7 +131,6 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
 
         if pi0 < 0:
             return float("inf")
-        # print("\n\nalphas", alpha0, alpha1, alpha2, alphaBoth)
 
         h0 = pi0 * allNull2
 
@@ -167,8 +166,8 @@ def processor(i, *args, **kwargs):
     return r
 
 
-def fitFnBivariateMT(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead"):
-    args = [altCountsByGene, pDs, 1, minLLThresholdCount,
+def fitFnBivariateMT(altCountsFlat, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead"):
+    args = [altCountsFlat, pDs, 1, minLLThresholdCount,
             K, debug, costFnIdx, method]
 
     results = []
