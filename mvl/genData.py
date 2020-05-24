@@ -2,6 +2,8 @@
 import torch
 import torch.tensor as tensor
 # import pyro.distributions as dist
+from torch.multiprocessing import Process, Pool, Queue, Manager, cpu_count
+
 from torch.distributions import Binomial, Gamma, Uniform
 from pyro.distributions import Multinomial, Dirichlet
 
@@ -234,11 +236,11 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
 def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes = 20000,
-             covShared=tensor([[1,.4,.4], [.4, 1, .4], [.4, .4, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
+             covShared=tensor([[1,0,0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
     covSharedStr = ",".join([str(x) for x in covShared.view(-1).numpy()])
     covSingleStr = ",".join([str(x) for x in covSingle.view(-1).numpy()])
     # TODO: assert shapes match
-    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
+    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs, "covShared", covShared, "covSingle", covSingle)
     print("\n\ntest tensor",covSharedStr)
     nConditions = len(nCases)
     assert(nConditions == 3)
@@ -592,137 +594,173 @@ def genParams(pis = tensor([.1, .1, .05]), rrShape = tensor(10.), rrMeans = tens
 
 import copy
 
+def writer(i, q, results):
+    message = f"I am Process {i}"
+
+    m = q.get()
+    print("Result: ", m)
+    return m
+
+
+def processor(i, params, *args):
+    np.random.seed()
+    torch.manual_seed(np.random.randint(1e9))
+    r = runSimIteration(params, *args)
+    return r
+
+
+def runSimMT(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]),
+nCases = tensor([15e3, 15e3, 6e3]), nCtrls = tensor(3e5), afMean = 1e-4,
+rrShape=tensor(50.), afShape=tensor(50.), generatingFn =  v6normal,
+fitMethod = 'annealing', nEpochs=20, mt = False,
+covShared=tensor([[1,0,0], [0, 1, 0], [0, 0, 1]]),
+covSingle=tensor([[1, 0], [0, 1]]),
+nIterations = 100):
+    results = []
+
+    with Pool(cpu_count()) as p:
+        processors = []
+        for rrsSimRun in rrs:
+            for pisSimRun in pis:
+                paramsRun = genParams(rrMeans=rrsSimRun, pis=pisSimRun, afMean=afMean, rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls)[0]
+                print("params are:", paramsRun)
+                results.append({"params": paramsRun, "runs": []})
+                for i in range(nIterations):
+                    processors.append(p.apply_async(
+                        processor, (i, paramsRun, afMean, generatingFn, fitMethod), callback=lambda res: results[-1]["runs"].append(res)))
+        # Wait for the asynchrounous reader threads to finish
+        [r.get() for r in processors]
+        print("Got results")
+
+        print(results)
+        return results
+
 def runSim(rrs = tensor([[1.5, 1.5, 1.5]]), pis = tensor([[.05, .05, .05]]),
 nCases = tensor([15e3, 15e3, 6e3]), nCtrls = tensor(3e5), afMean = 1e-4,
 rrShape=tensor(50.), afShape=tensor(50.), generatingFn =  v6normal,
 fitMethod = 'annealing', nEpochs=20, mt = False,
 covShared=tensor([[1,0,0], [0, 1, 0], [0, 0, 1]]),
-covSingle=tensor([[1, 0], [0, 1]])):
-    resSim = {
-            "allRes": None,
-            "nEpochs": None,
-            "bestRes": {
-                "pis": None,
-                "alphas": None,
-                "PDV_c1true": None,
-                "PDV_c2true": None,
-                "PDV_cBothTrue": None,
-                "PDV_c1inferred": None,
-                "PDV_c2inferred": None,
-                "PDV_cBothInferred": None,
-            }
-        }
-
-    results = []
+covSingle=tensor([[1, 0], [0, 1]]),
+nIterations = 100):
     print("MT is ", mt)
-#     assert(1 == 0)
-    i = 0
+    results = []
     for rrsSimRun in rrs:
         for pisSimRun in pis:
-            
-            # In DSB:
-            # 	No ID	ID	
-            #         ASD+ADHD	684	217	
-            #         ASD	3091	871	
-            #         ADHD	3206	271	
-            #         Control	5002	-	
-
-            #         gnomAD	44779	(Non-Finnish Europeans in non-psychiatric exome subset)	
-
-            #         Case total:	8340		
-            #         Control total:	49781		
-            # so we can use pDBoth = .1 * total_cases
-            # needs tensor for shapes, otherwise "gamma_cpu not implemente for long", e.g rrShape=50.0 doesn't work...
             paramsRun = genParams(rrMeans=rrsSimRun, pis=pisSimRun, afMean=afMean, rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls)[0]
-
-            pDsRun = paramsRun["pDs"]
-            pisRun = paramsRun["diseaseFractions"]
             print("params are:", paramsRun)
-
             results.append({"params": paramsRun, "runs": []})
-            for y in range(0, 10):
-                start = time.time()
-                r = generatingFn(**paramsRun)
-                print("took", time.time() - start)
-
-                resPointer = {
-                    **r,
-                    "generatingFn": generatingFn,
-                    "results": None,
-                }
-
-                results[i]["runs"].append(resPointer)
-
-                print(f"Run: {i}, {y}")
-
-                xsRun = resPointer["altCounts"]
-                afsRun = resPointer["afs"]
-                affectedGenesRun = resPointer["affectedGenes"]
-                unaffectedGenesRun = resPointer["unaffectedGenes"]
-
-                runCostFnIdx = 0
-                print("fit method is", fitMethod)
-                start = time.time()
-                if mt is True:
-                    res = fitFnBivariateMT(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
-                    bestRes = None
-                    bestLL = None
-                    for r in res:
-                        print("r:", r)
-                        if bestLL is None or r["lls"][-1] < bestLL:
-                            bestRes = r["params"][-1]
-                            bestLL = r["lls"][-1]
-                    print("bestLL", bestLL)
-                    print("bestRes", bestRes)
-                else:
-                    # res here I think is different htan multi case
-                    res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
-                    bestRes = res["params"][-1]
-                print("took", time.time() - start)
-
-                inferredPis = tensor(bestRes[0:3]) # 3-vector
-                inferredAlphas = tensor(bestRes[3:]) # 4-vector, idx0 is P(!D|V)
-
-                #### Calculate actual ###
-                component1Afs = afsRun[affectedGenesRun[0]]
-                c1true = (component1Afs / afMean).mean(0)
-
-                component2Afs = afsRun[affectedGenesRun[1]]
-                c2true = (component2Afs / afMean).mean(0)
-
-                componentBothAfs = afsRun[affectedGenesRun[2]]
-                cBothTrue = (componentBothAfs / afMean).mean(0)
-
-                ### calculate inferred values
-                pds = tensor([1-pDsRun.sum(), *pDsRun])
-                alphas = inferredAlphas.numpy()
-                c1inferred = Dirichlet(tensor([alphas[0], alphas[1], alphas[0], alphas[2]]) * pds).sample([10_000]).mean(0)
-                c2inferred = Dirichlet(tensor([alphas[0], alphas[0], alphas[2], alphas[2]]) * pds).sample([10_000]).mean(0)
-                cBothInferred = Dirichlet(tensor([alphas[0], (alphas[1] + alphas[3]), (alphas[2] + alphas[3]), (alphas[1] + alphas[2] + alphas[3])]) * pds).sample([10_000]).mean(0)
-
-                print(f"\n\nrun {i} results for rrs: {rrsSimRun}, pis: {pisSimRun}")
-                print("Inferred pis:", inferredPis)
-                print("\nP(D|V) true ans in component 1:", c1true)
-                print("P(D|V) inferred in component 1:", c1inferred)
-                print("\nP(D|V) true ans in component 1:", c2true)
-                print("P(D|V) inferred in component both:", c2inferred)
-                print("\nP(D|V) true ans in component both:", cBothTrue)
-                print("P(D|V) inferred in component both:", cBothInferred,"\n\n")
-
-                resToStore = copy.deepcopy(resSim)
-                resToStore["allRes"] = res
-                resToStore["nEpochs"] = nEpochs
-                br = resToStore["bestRes"]
-                br["pis"] = inferredPis
-                br["alphas"] = inferredAlphas
-                br["PDV_c1true"] = c1true
-                br["PDV_c2true"] = c2true
-                br["PDV_cBothTrue"] = cBothTrue
-                br["PDV_c1inferred"] = c1inferred
-                br["PDV_c2inferred"] = c2inferred
-                br["PDV_cBothInferred"] = cBothInferred
-
-                resPointer["results"] = resToStore
-
-            i += 1
+            for y in range(nIterations):
+                results[-1]["runs"].append(runSimIteration)
         return results
+
+def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'annealing', mt = False, nEpochs = 1):
+    # In DSB:
+    # 	No ID	ID	
+    #         ASD+ADHD	684	217	
+    #         ASD	3091	871	
+    #         ADHD	3206	271	
+    #         Control	5002	-	
+
+    #         gnomAD	44779	(Non-Finnish Europeans in non-psychiatric exome subset)	
+
+    #         Case total:	8340		
+    #         Control total:	49781		
+    # so we can use pDBoth = .1 * total_cases
+    # needs tensor for shapes, otherwise "gamma_cpu not implemente for long", e.g rrShape=50.0 doesn't work...
+    pDsRun = paramsRun["pDs"]
+    pisRun = paramsRun["diseaseFractions"]
+    
+    resToStore = {
+        "allRes": None,
+        "nEpochs": None,
+        "bestRes": {
+            "pis": None,
+            "alphas": None,
+            "PDV_c1true": None,
+            "PDV_c2true": None,
+            "PDV_cBothTrue": None,
+            "PDV_c1inferred": None,
+            "PDV_c2inferred": None,
+            "PDV_cBothInferred": None,
+        }
+    }
+
+    start = time.time()
+    r = generatingFn(**paramsRun)
+    print("took", time.time() - start)
+
+    resPointer = {
+        **r,
+        "generatingFn": generatingFn,
+        "results": None,
+    }
+
+    xsRun = resPointer["altCounts"]
+    afsRun = resPointer["afs"]
+    affectedGenesRun = resPointer["affectedGenes"]
+    unaffectedGenesRun = resPointer["unaffectedGenes"]
+
+    runCostFnIdx = 0
+    print("fit method is", fitMethod)
+    start = time.time()
+    if mt is True:
+        res = fitFnBivariateMT(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
+        bestRes = None
+        bestLL = None
+        for r in res:
+            print("r:", r)
+            if bestLL is None or r["lls"][-1] < bestLL:
+                bestRes = r["params"][-1]
+                bestLL = r["lls"][-1]
+        print("bestLL", bestLL)
+        print("bestRes", bestRes)
+    else:
+        # res here I think is different htan multi case
+        res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
+        bestRes = res["params"][-1]
+    print("took", time.time() - start)
+
+    inferredPis = tensor(bestRes[0:3]) # 3-vector
+    inferredAlphas = tensor(bestRes[3:]) # 4-vector, idx0 is P(!D|V)
+
+    #### Calculate actual ###
+    component1Afs = afsRun[affectedGenesRun[0]]
+    c1true = (component1Afs / afMean).mean(0)
+
+    component2Afs = afsRun[affectedGenesRun[1]]
+    c2true = (component2Afs / afMean).mean(0)
+
+    componentBothAfs = afsRun[affectedGenesRun[2]]
+    cBothTrue = (componentBothAfs / afMean).mean(0)
+
+    ### calculate inferred values
+    pds = tensor([1-pDsRun.sum(), *pDsRun])
+    alphas = inferredAlphas.numpy()
+    c1inferred = Dirichlet(tensor([alphas[0], alphas[1], alphas[0], alphas[2]]) * pds).sample([10_000]).mean(0)
+    c2inferred = Dirichlet(tensor([alphas[0], alphas[0], alphas[2], alphas[2]]) * pds).sample([10_000]).mean(0)
+    cBothInferred = Dirichlet(tensor([alphas[0], (alphas[1] + alphas[3]), (alphas[2] + alphas[3]), (alphas[1] + alphas[2] + alphas[3])]) * pds).sample([10_000]).mean(0)
+
+    print(f"\n\nrun {i} results for rrs: {rrsSimRun}, pis: {pisSimRun}")
+    print("Inferred pis:", inferredPis)
+    print("\nP(D|V) true ans in component 1:", c1true)
+    print("P(D|V) inferred in component 1:", c1inferred)
+    print("\nP(D|V) true ans in component 1:", c2true)
+    print("P(D|V) inferred in component both:", c2inferred)
+    print("\nP(D|V) true ans in component both:", cBothTrue)
+    print("P(D|V) inferred in component both:", cBothInferred,"\n\n")
+
+    resToStore["allRes"] = res
+    resToStore["nEpochs"] = nEpochs
+    br = resToStore["bestRes"]
+    br["pis"] = inferredPis
+    br["alphas"] = inferredAlphas
+    br["PDV_c1true"] = c1true
+    br["PDV_c2true"] = c2true
+    br["PDV_cBothTrue"] = cBothTrue
+    br["PDV_c1inferred"] = c1inferred
+    br["PDV_c2inferred"] = c2inferred
+    br["PDV_cBothInferred"] = cBothInferred
+
+    resPointer["results"] = resToStore
+
+    return resPointer

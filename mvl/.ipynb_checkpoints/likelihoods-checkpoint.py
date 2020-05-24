@@ -67,9 +67,18 @@ def nullLikelihood(pDs, altCounts):
     return torch.exp(Multinomial(probs=pDs).log_prob(altCounts))
 
 def effect1Likelihood(n, pDs, alpha0, alpha1, altCounts):
-    alphas = pDs * tensor([alpha0, alpha1, alpha0, alpha1])
+    # actrl = pDs[0] * alpha0
+    # a11 = pDs[2] * alpha1
+    # a12 = pDs[2] * alpha0
+    # a1Both = pDs[3] * alpha1
+    
+    # print("pds", pDs, "alphas", alpha0, alpha1)
+    # print("concentrations", tensor([actrl, a11, a12, a1Both]), "vs", pDs * tensor([alpha0, alpha1, alpha0, alpha1], dtype=torch.float64))
+    h1 = torch.exp( DirichletMultinomial(total_count=n, concentration=pDs * tensor([alpha0, alpha1, alpha0, alpha1], dtype=torch.float64)).log_prob(altCounts) )
+    return h1
+    # alphas = pDs * tensor([alpha0, alpha1, alpha0, alpha1])
 
-    return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
+    # return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
 
 def effect2Likelihood(n, pDs, alpha0, alpha2, altCounts):
     alphas = pDs * tensor([alpha0, alpha0, alpha2, alpha2])
@@ -82,55 +91,106 @@ def effectBothLikelihood(n, pDs, alpha0, alpha1, alpha2, alphaBoth, altCounts):
 
     return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
 
-def likelihoodBivariateFast(altCountsByGene, pDs):
+def likelihoodBivariateFast(altCountsByGene, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
     nGenes = altCountsByGene.shape[0]
 
-    altCountsFlat = altCountsByGene
+    if(altCountsByGene.shape[1] == 4):
+        altCountsFlat = altCountsByGene
+    else:
+        altCountsFlat = []
+        for geneIdx in range(nGenes):
+            # ctrl count is first index of first condition, all other conditions get 0 count at 0th index
+            altCountsFlat.append(
+                [altCountsByGene[geneIdx, 0, 0], *altCountsByGene[geneIdx, :, 1].flatten()])
 
-    # else:
-    #     altCountsFlat = []
-    #     for geneIdx in range(nGenes):
-    #         # ctrl count is first index of first condition, all other conditions get 0 count at 0th index
-    #         altCountsFlat.append(
-    #             [altCountsByGene[geneIdx, 0, 0], *altCountsByGene[geneIdx, :, 1].flatten()])
+        altCountsFlat = tensor(altCountsFlat)
 
-    #     altCountsFlat = tensor(altCountsFlat)
-    # print("new flat", altCountsFlat)
+    # nGenes x 4
+    xCtrl = altCountsFlat[:, 0]
+    xCase1 = altCountsFlat[:, 1]
+    xCase2 = altCountsFlat[:, 2]
+    xCase12 = altCountsFlat[:, 3]
+    # nGenes x 1
+    n = xCtrl + xCase1 + xCase2 + xCase12
 
     pd1 = pDs[0]
     pd2 = pDs[1]
     pdBoth = pDs[2]
     pdCtrl = 1 - pDs.sum()
 
-    pDsAll = tensor([pdCtrl, pd1, pd2, pdBoth])
- 
+    pDsAll = tensor([pdCtrl, pd1, pd2, pdBoth], dtype=torch.float64)
+    
+    print("pdCtrl, pd1, pd2, pdBoth: ", pDsAll)
+
     allNull2 = nullLikelihood(pDsAll, altCountsFlat)
+    allNull2Log = torch.log(allNull2)
 
     # TODO: make this flexible for multivariate
     nConditions = 4
     nHypothesesNonNull = 3
-
+    print("DOING IT")
     altCountsShaped = altCountsFlat.expand(nHypothesesNonNull, nGenes, nConditions).transpose(0, 1)
-    n = altCountsFlat.sum(1).expand(nHypothesesNonNull, nGenes).T
+    nShaped = n.expand(nHypothesesNonNull, nGenes).T
+    pdsAllShaped = pDsAll.expand(nHypothesesNonNull, nConditions)
     def jointLikelihood(params):
-        pi1, pi2, piBoth, a0, a1, a2, aBoth = params
+        pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if a0 < 0 or a1 < 0 or a2 < 0 or aBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
             return float("inf")
 
         pi0 = 1.0 - (pi1 + pi2 + piBoth)
 
         if pi0 < 0:
             return float("inf")
+        # print("\n\nalphas", alpha0, alpha1, alpha2, alphaBoth)
 
         h0 = pi0 * allNull2
 
-        concentrations = pDsAll * tensor([[a0, a1, a0, a1], [a0, a0, a2, a2], [a0, a1 + aBoth, a2 + aBoth, a1 + a2 + aBoth]])
-        concentrations = concentrations.expand(nGenes, nHypothesesNonNull, nConditions)
+        trajectoryPis.append([pi1, pi2, piBoth])
+        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
 
-        hs = tensor([[pi1, pi2, piBoth]]) * torch.exp(DirichletMultinomial(total_count=n, concentration=concentrations).log_prob(altCountsShaped))
+        # actrl = pdCtrl * alpha0s
+        # a11 = pd1 * alpha1
+        # a12 = pd2 * alpha0
+        # a1Both = pdBoth * alpha1
+        
+        # h1 = pi1 * torch.exp( DirichletMultinomial(total_count=n, concentration=tensor([actrl, a11, a12, a1Both])).log_prob(altCountsFlat) )
+        
+        # a21 = pd1 * alpha0
+        # a22 = pd2 * alpha2
+        # a2Both = pdBoth * alpha2
+        # h2 = pi2 * torch.exp( DirichletMultinomial(total_count=n, concentration=tensor([actrl, a21, a22, a2Both])).log_prob(altCountsFlat) )
+        
+        # aBoth1 = pd1 * (alpha1 + alphaBoth)
+        # aBoth2 = pd2 * (alpha2 + alphaBoth)
+        # aBothBoth = pdBoth * (alpha1 + alpha2 + alphaBoth)
+        # h3 = piBoth * torch.exp( DirichletMultinomial(total_count=n, concentration=tensor([actrl, aBoth1, aBoth2, aBothBoth])).log_prob(altCountsFlat) )
 
-        return -torch.log(hs.sum(1)).sum()
+        # Version using vecotrized multiplication
+        # h1new = pi1 * effect1Likelihood(n, pDsAll, alpha0, alpha1, altCountsFlat)
+        # h2 = pi2 * effect2Likelihood(n, pDsAll, alpha0, alpha2, altCountsFlat)
+        # h3 = piBoth * effectBothLikelihood(n, pDsAll, alpha0, alpha1, alpha2, alphaBoth, altCountsFlat)
+
+        # concentrationsOG = tensor([[actrl, a11, a12, a1Both], [actrl, a21, a22, a2Both], [actrl, aBoth1, aBoth2, aBothBoth]])
+        concentrations = pdsAllShaped * tensor([
+            [alpha0, alpha1, alpha0, alpha1],
+            [alpha0, alpha0, alpha2, alpha2],
+            [alpha0, alpha1 + alphaBoth, alpha2 + alphaBoth, alpha1 + alpha2 + alphaBoth]
+        ]).expand(nGenes, nHypothesesNonNull, nConditions)
+        
+        # print('concentrationsOG vs concentrations', concentrationsOG - concentrations)
+
+        # concentrations = concentrations.expand(nGenes, nHypothesesNonNull, nConditions)
+        hs = tensor([[pi1, pi2, piBoth]]) * torch.exp(DirichletMultinomial(total_count=nShaped, concentration=concentrations).log_prob(altCountsShaped))
+
+        ll = -torch.log(h0 + hs.sum(1)).sum()
+        trajectoryLLs.append(ll)
+        return ll
+        # res2 = -torch.log(h0 + h1 + h2 + h3).sum()
+        # res3 = -(pi0 * allNull2Log + hsJensen.sum(1)).sum()
+        # print("res", res1)
+        # print("re2", res2)
+        # print("res3", res3, "\n\n")
 
     return jointLikelihood
 
@@ -163,9 +223,9 @@ def fitFnBivariateMT(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, 
                 processor, (i, *args), callback=lambda res: results.append(res)))
         # Wait for the asynchrounous reader threads to finish
         [r.get() for r in processors]
-#         print("Got results")
+        print("Got results")
 
-#         print(results)
+        print(results)
         return results
 
 # TODO: maybe beta distribution should be constrained such that variance is that of the data?
@@ -173,8 +233,11 @@ def fitFnBivariateMT(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, 
 
 
 def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead"):
-    costFn = likelihoodBivariateFast(altCountsByGene, pDs)
-#     print("method", method, "costFn", costFn)
+    trajectoryPis = []
+    trajectoryAlphas = []
+    trajectoryLLs = []
+    costFn = likelihoodBivariateFast(altCountsByGene, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs)
+    print("method", method, "costFn", costFn)
 
     assert(method == "nelder-mead" or method ==
            "annealing" or method == "basinhopping")
@@ -199,7 +262,7 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=
         if method == "nelder-mead" or method == "basinhopping":
             best = float("inf")
             bestParams = []
-            for y in range(500):
+            for y in range(200):
                 pi0 = pi0Dist.sample()
                 pis = Uniform(1/nGenes, 1-pi0).sample([K-1])
                 pis = pis/(pis.sum() + pi0)
@@ -270,7 +333,7 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=
         if thresholdHitCount == minLLThresholdCount:
             break
 
-    return {"lls": lls, "params": params, "llTrajectory": llsAll}
+    return {"lls": lls, "llsAll": llsAll, "params": params, "trajectoryLLs": trajectoryLLs, "trajectoryPi": trajectoryPis, "trajectoryAlphas": trajectoryAlphas}
 
 
 def initBetaParams(mu, variance):
