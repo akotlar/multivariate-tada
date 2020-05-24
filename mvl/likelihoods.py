@@ -66,41 +66,10 @@ def pDgivenV(pD, pVgivenD, pV):
 def nullLikelihood(pDs, altCounts):
     return torch.exp(Multinomial(probs=pDs).log_prob(altCounts))
 
-def effect1Likelihood(n, pDs, alpha0, alpha1, altCounts):
-    # actrl = pDs[0] * alpha0
-    # a11 = pDs[2] * alpha1
-    # a12 = pDs[2] * alpha0
-    # a1Both = pDs[3] * alpha1
-    
-    # print("pds", pDs, "alphas", alpha0, alpha1)
-    # print("concentrations", tensor([actrl, a11, a12, a1Both]), "vs", pDs * tensor([alpha0, alpha1, alpha0, alpha1], dtype=torch.float64))
-    h1 = torch.exp( DirichletMultinomial(total_count=n, concentration=pDs * tensor([alpha0, alpha1, alpha0, alpha1], dtype=torch.float64)).log_prob(altCounts) )
-    return h1
-    # alphas = pDs * tensor([alpha0, alpha1, alpha0, alpha1])
 
-    # return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
-
-def effect2Likelihood(n, pDs, alpha0, alpha2, altCounts):
-    alphas = pDs * tensor([alpha0, alpha0, alpha2, alpha2])
-
-    return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
-
-def effectBothLikelihood(n, pDs, alpha0, alpha1, alpha2, alphaBoth, altCounts):
-    alphas = pDs * tensor([alpha0, alpha1 + alphaBoth,
-                           alpha2 + alphaBoth, alpha1 + alpha2 + alphaBoth])
-
-    return torch.exp(DirichletMultinomial(total_count=n, concentration=alphas).log_prob(altCounts))
-
-def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
+def effectLikelihood(nHypotheses, pDs, altCountsFlat):
     nGenes = altCountsFlat.shape[0]
-
-    # nGenes x 4
-    xCtrl = altCountsFlat[:, 0]
-    xCase1 = altCountsFlat[:, 1]
-    xCase2 = altCountsFlat[:, 2]
-    xCase12 = altCountsFlat[:, 3]
-    # nGenes x 1
-    n = xCtrl + xCase1 + xCase2 + xCase12
+    nConditions = altCountsFlat.shape[1]
 
     pd1 = pDs[0]
     pd2 = pDs[1]
@@ -111,16 +80,39 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
     
     print("pdCtrl, pd1, pd2, pdBoth: ", pDsAll)
 
-    allNull2 = nullLikelihood(pDsAll, altCountsFlat)
-    allNull2Log = torch.log(allNull2)
+    # nGenes x 4
+    xCtrl = altCountsFlat[:, 0]
+    xCase1 = altCountsFlat[:, 1]
+    xCase2 = altCountsFlat[:, 2]
+    xCase12 = altCountsFlat[:, 3]
+    # nGenes x 1
+    n = xCtrl + xCase1 + xCase2 + xCase12
 
-    # TODO: make this flexible for multivariate
-    nConditions = 4
-    nHypothesesNonNull = 3
-
+    nHypothesesNonNull = nHypotheses - 1
     altCountsShaped = altCountsFlat.expand(nHypothesesNonNull, nGenes, nConditions).transpose(0, 1)
     nShaped = n.expand(nHypothesesNonNull, nGenes).T
     pdsAllShaped = pDsAll.expand(nHypothesesNonNull, nConditions)
+
+    nullLike = nullLikelihood(pDsAll, altCountsFlat)
+
+    def likelihoodFn(alpha0, alpha1, alpha2, alphaBoth):
+        concentrations = pdsAllShaped * tensor([
+            [alpha0, alpha1, alpha0, alpha1],
+            [alpha0, alpha0, alpha2, alpha2],
+            [alpha0, alpha1 + alphaBoth, alpha2 + alphaBoth, alpha1 + alpha2 + alphaBoth]
+        ]).expand(nGenes, nHypothesesNonNull, nConditions)
+
+        return torch.exp(DirichletMultinomial(total_count=nShaped, concentration=concentrations).log_prob(altCountsShaped))
+
+    return likelihoodFn, nullLike
+    
+
+def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
+    print(altCountsFlat.shape)
+
+    # TODO: make this flexible for multivariate
+    nHypotheses = 4
+    likelihoodFn, allNull2 = effectLikelihood(nHypotheses, pDs, altCountsFlat)
     def jointLikelihood(params):
         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
@@ -136,14 +128,8 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
 
         trajectoryPis.append([pi1, pi2, piBoth])
         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
-
-        concentrations = pdsAllShaped * tensor([
-            [alpha0, alpha1, alpha0, alpha1],
-            [alpha0, alpha0, alpha2, alpha2],
-            [alpha0, alpha1 + alphaBoth, alpha2 + alphaBoth, alpha1 + alpha2 + alphaBoth]
-        ]).expand(nGenes, nHypothesesNonNull, nConditions)
         
-        hs = tensor([[pi1, pi2, piBoth]]) * torch.exp(DirichletMultinomial(total_count=nShaped, concentration=concentrations).log_prob(altCountsShaped))
+        hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
 
         ll = -torch.log(h0 + hs.sum(1)).sum()
         trajectoryLLs.append(ll)
