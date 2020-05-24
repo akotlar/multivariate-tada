@@ -636,7 +636,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
     import os
     from datetime import date
 
-    results = {}
+    results = []
 
     folder = str(date.today()) + str(int(time.time()))
     os.makedirs(folder, exist_ok=True)
@@ -664,10 +664,12 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 print(f"finished sim of params: {paramsRun}")
                 np.save(name, simRes)
 
-                results[paramsRun] = name
+                results.append([paramsRuns, name])
                 
-        print("Got results")
+        print("Done")
         print(results)
+
+        np.save(os.path.join(folder, "results_list.tsv"), "\n".join(results))
 
         return results
 
