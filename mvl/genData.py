@@ -122,11 +122,11 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
         altCounts.append(altCountsGene)
         probs.append(p.numpy())
         rrAll.append(rrSamples)
-    altCounts = tensor(altCounts)
-    probs = tensor(probs)
+    altCounts = tensor(altCounts, dtype=torch.short)
+    probs = tensor(probs, dtype=torch.float64)
     
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
-    return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll }
+    return { "altCounts": altCounts, "afs": probs, "affectedGenes": tensor(affectedGenes, dtype=torch.short), "unaffectedGenes": tensor(unaffectedGenes, dtype=torch.short), "rrs": rrAll }
 
 # Like 5, but make approximation that P(V|D) = P(V)*rr, by observing that rr*P(D|V) + 1-P(V) is ~1 for intermediate rr and small P(V)
 # say a typical P(V|D) is ~
@@ -550,7 +550,7 @@ def v7(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     probs = tensor(probs)
     
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
-    return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrs }
+    return { "altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": tensor(rrs) }
 
 
 def flattenAltCounts(altCounts, afs):
@@ -627,7 +627,7 @@ nIterations = 100):
                 results.append({"params": paramsRun, "runs": []})
                 for i in range(nIterations):
                     processors.append(p.apply_async(
-                        processor, (i, paramsRun, afMean, generatingFn, fitMethod), callback=lambda res: results[-1]["runs"].append(res)))
+                        processor, (i, paramsRun, generatingFn, fitMethod), callback=lambda res: results[-1]["runs"].append(res)))
         # Wait for the asynchrounous reader threads to finish
         [r.get() for r in processors]
         print("Got results")
@@ -653,7 +653,7 @@ nIterations = 100):
                 results[-1]["runs"].append(runSimIteration)
         return results
 
-def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'annealing', mt = False, nEpochs = 1):
+def runSimIteration(paramsRun, generatingFn = v6normal, fitMethod = 'annealing', mt = False, nEpochs = 1):
     # In DSB:
     # 	No ID	ID	
     #         ASD+ADHD	684	217	
@@ -669,7 +669,9 @@ def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'ann
     # needs tensor for shapes, otherwise "gamma_cpu not implemente for long", e.g rrShape=50.0 doesn't work...
     pDsRun = paramsRun["pDs"]
     pisRun = paramsRun["diseaseFractions"]
-    
+    afMeanRun = paramsRun["afMean"]
+    rrMeansRun = paramsRun["rrMeans"]
+
     resToStore = {
         "allRes": None,
         "nEpochs": None,
@@ -725,13 +727,13 @@ def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'ann
 
     #### Calculate actual ###
     component1Afs = afsRun[affectedGenesRun[0]]
-    c1true = (component1Afs / afMean).mean(0)
+    c1true = (component1Afs / afMeanRun).mean(0)
 
     component2Afs = afsRun[affectedGenesRun[1]]
-    c2true = (component2Afs / afMean).mean(0)
+    c2true = (component2Afs / afMeanRun).mean(0)
 
     componentBothAfs = afsRun[affectedGenesRun[2]]
-    cBothTrue = (componentBothAfs / afMean).mean(0)
+    cBothTrue = (componentBothAfs / afMeanRun).mean(0)
 
     ### calculate inferred values
     pds = tensor([1-pDsRun.sum(), *pDsRun])
@@ -740,7 +742,8 @@ def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'ann
     c2inferred = Dirichlet(tensor([alphas[0], alphas[0], alphas[2], alphas[2]]) * pds).sample([10_000]).mean(0)
     cBothInferred = Dirichlet(tensor([alphas[0], (alphas[1] + alphas[3]), (alphas[2] + alphas[3]), (alphas[1] + alphas[2] + alphas[3])]) * pds).sample([10_000]).mean(0)
 
-    print(f"\n\nrun {i} results for rrs: {rrsSimRun}, pis: {pisSimRun}")
+    print(f"\n\nrun results for rrs: {rrMeansRun}, pis: {pisRun}")
+
     print("Inferred pis:", inferredPis)
     print("\nP(D|V) true ans in component 1:", c1true)
     print("P(D|V) inferred in component 1:", c1inferred)
@@ -748,6 +751,22 @@ def runSimIteration(paramsRun, afMean, generatingFn = v6normal, fitMethod = 'ann
     print("P(D|V) inferred in component both:", c2inferred)
     print("\nP(D|V) true ans in component both:", cBothTrue)
     print("P(D|V) inferred in component both:", cBothInferred,"\n\n")
+
+    # this is too big, probably because of the trajectories
+    del res["trajectoryLLs"]
+    del res["trajectoryPi"]
+    del res["trajectoryAlphas"]
+
+    print("res", res)
+
+    # TODO: write these to file somehow
+    a2 = []
+    for x in affectedGenesRun:
+        a2.append([x[0], x[-1]])
+    resPointer["affectedGenes"] = tensor(a2)
+    resPointer["unaffectedGenes"] = tensor([unaffectedGenesRun[0], unaffectedGenesRun[-1]])
+    # TODO: figure out a better way to store  these
+    del resPointer["rrs"]
 
     resToStore["allRes"] = res
     resToStore["nEpochs"] = nEpochs
