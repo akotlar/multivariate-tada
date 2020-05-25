@@ -633,6 +633,8 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              nIterations=100):
     import os
     from datetime import date
+    import time
+    import json
 
     results = []
 
@@ -651,7 +653,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 
                 print("params are:", paramsRun)
                 print(f"Will save to {name}")
-
+                start = time.time()
                 for i in range(nIterations):
                     processors.append(p.apply_async(
                         processor, (i, paramsRun, generatingFn, fitMethod), callback=lambda res: simRes["runs"].append(res)))
@@ -660,14 +662,15 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 [r.get() for r in processors]
 
                 print(f"finished sim of params: {paramsRun}")
+                print(f"simulation took {time.time() - start}s")
                 np.save(name, simRes)
 
-                results.append([paramsRuns, name])
+                results.append([paramsRun, name])
                 
         print("Done")
         print(results)
 
-        np.save(os.path.join(folder, "results_list.tsv"), "\n".join(results))
+        np.save(os.path.join(folder, "results_list.tsv"), json.dumps(results))
 
         return results
 
