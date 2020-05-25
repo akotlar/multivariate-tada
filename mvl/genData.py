@@ -590,10 +590,11 @@ def flattenAltCounts(altCounts, afs):
     return altCountsFlatPooled, afsFlatPooled, flattenedData
 
 
-def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5)):
+def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), pDs=None):
     nGenes = 20_000
 
-    pDs = nCases / (nCases.sum() + nCtrls)
+    if pDs is None:
+        pDs = nCases / (nCases.sum() + nCtrls)
     print("pDs are:", pDs)
 
     return [{
@@ -626,12 +627,13 @@ def processor(i, params, *args):
 
 def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              nCases=tensor([15e3, 15e3, 6e3]), nCtrls=tensor(3e5), afMean=1e-4,
-             rrShape=tensor(50.), afShape=tensor(50.), generatingFn=v6normal,
+             rrShape=tensor(50.), afShape=tensor(50.), pDs = None, generatingFn=v6normal,
              fitMethod='annealing', nEpochs=20, mt=False,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
              covSingle=tensor([[1, 0], [0, 1]]),
              nIterations=100):
     import os
+    from os import path
     from datetime import date
     import time
     import json
@@ -642,17 +644,21 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
     os.makedirs(folder, exist_ok=True)
 
     with Pool(cpu_count()) as p:
+        y = 0
         for rrsSimRun in rrs:
             for pisSimRun in pis:
-                paramsRun = genParams(rrMeans=rrsSimRun, pis=pisSimRun, afMean=afMean,
-                                      rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls)[0]
+                paramsRun = genParams(rrMeans=rrsSimRun, pis=pisSimRun, afMean=afMean, pDs=pDs,
+                                      rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls, covShared=covShared, covSingle=covSingle)[0]
                 processors = []
                 simRes = {"params": paramsRun, "runs": []}
                 
-                name = os.path.join(folder, "_".join([f"""{k}_{v}""" for (k, v) in paramsRun.items()]))
-                
+                folder_inner = path.join(folder, f"{y}")
+                # name = os.path.join(folder, "_".join([f"""{k}_{v}""" for (k, v) in paramsRun.items()]))
+                os.makedirs(folder_inner, exist_ok=True)
+
+                np.save(path.join(folder_inner, "params"), paramsRun)
                 print("params are:", paramsRun)
-                print(f"Will save to {name}")
+
                 start = time.time()
                 for i in range(nIterations):
                     processors.append(p.apply_async(
@@ -663,14 +669,15 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
 
                 print(f"finished sim of params: {paramsRun}")
                 print(f"simulation took {time.time() - start}s")
-                np.save(name, simRes)
+                np.save(path.join(folder_inner, "data"), simRes)
 
-                results.append([paramsRun, name])
+                results.append(paramsRun)
+                y += 1
                 
         print("Done")
         print(results)
 
-        np.save(os.path.join(folder, "results_list.tsv"), json.dumps(results))
+        np.save(os.path.join(folder, "results_list"), results)
 
         return results
 
