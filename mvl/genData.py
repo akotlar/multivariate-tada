@@ -23,10 +23,26 @@ from pyper import *
 import time
 seed = 0
 
+def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), af = 1e-4, pDs = tensor([.01,.01,.002]), sampleShape = (), approx = True):
+    if approx:
+        probVgivenDs = pVgivenDapprox(rrs, af)
+    else:
+        probVgivenDs = pVgivenD(rrs, af)
+    probVgivenNotD = pVgivenNotD(pDs, af, probVgivenDs)
+
+    p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+
+    totalProbability = p.sum()
+
+    # print(totalProbability)
+
+    assert (abs(totalProbability-af) / af) <= 1e-6
+    marginalAlleleCount = int(totalProbability * totalSamples)
+
+    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(sampleShape), p
+
 # Like the 4b case, but multinomial
 # TODO: shoudl we do int() or some rounding function to go from float counts to int counts
-
-
 def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
@@ -62,6 +78,7 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 
     totalSamples = int(nCtrls + nCases.sum())
     print("totalSamples", totalSamples)
+
     for geneIdx in range(nGenes):
         geneAltCounts = []
         geneProbs = []
@@ -104,26 +121,10 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
             rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
             rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
-#         print("affects", affects, "rrSamples", rrSamples)
-        probVgivenDs = pVgivenD(rrSamples, afs[geneIdx])
-        probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
 
-        p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, af = afs[geneIdx], pDs = pDs,approx=False)
 
-        totalProbability = p.sum()
-#         print("af", afs[geneIdx], "probVgivenDs", probVgivenDs, "pDs", pDs, "probVgivenNotD", probVgivenNotD, "totalProbability", totalProbability)
-
-        assert (abs(totalProbability-afs[geneIdx]) / afs[geneIdx]) < 1e-6
-        marginalAlleleCount = int(totalProbability * totalSamples)
-#         print("marginal allele count", marginalAlleleCount)
-
-#         print("probs", probs)
-        # without .numpy() can't later convert tensor(altCounts) : "only tensors can be converted to Python scalars"
-        altCountsGene = Multinomial(
-            probs=p, total_count=marginalAlleleCount).sample().numpy()
-
-#         print("altCountsGene", altCountsGene)
-        altCounts.append(altCountsGene)
+        altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
         rrAll.append(rrSamples)
     altCounts = tensor(altCounts, dtype=torch.short)
@@ -134,8 +135,6 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 
 # Like 5, but make approximation that P(V|D) = P(V)*rr, by observing that rr*P(D|V) + 1-P(V) is ~1 for intermediate rr and small P(V)
 # say a typical P(V|D) is ~
-
-
 def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
@@ -213,26 +212,10 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
             rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
             rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
-#         print("affects", affects, "rrSamples", rrSamples)
-        probVgivenDs = pVgivenDapprox(rrSamples, afs[geneIdx])  # rr*q
-        probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
 
-        p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, af = afs[geneIdx], pDs = pDs)
 
-        totalProbability = p.sum()
-#         print("af", afs[geneIdx], "probVgivenDs", probVgivenDs, "pDs", pDs, "probVgivenNotD", probVgivenNotD, "totalProbability", totalProbability)
-#         print("abs(totalProbability-afs[geneIdx]) / afs[geneIdx]", abs(totalProbability-afs[geneIdx]) / afs[geneIdx])
-        assert (abs(totalProbability-afs[geneIdx]) / afs[geneIdx]) <= 1e-6
-        marginalAlleleCount = int(totalProbability * totalSamples)
-#         print("marginal allele count", marginalAlleleCount)
-
-#         print("probs", probs)
-        # without .numpy() can't later convert tensor(altCounts) : "only tensors can be converted to Python scalars"
-        altCountsGene = Multinomial(
-            probs=p, total_count=marginalAlleleCount).sample().numpy()
-
-#         print("altCountsGene", altCountsGene)
-        altCounts.append(altCountsGene)
+        altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
         rrAll.append(rrSamples)
     altCounts = tensor(altCounts)
@@ -242,8 +225,6 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-
-
 def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
     covSharedStr = ",".join([str(x) for x in covShared.view(-1).numpy()])
@@ -290,6 +271,7 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
 
     totalSamples = int(nCtrls + nCases.sum())
     print("totalSamples", totalSamples)
+
     for geneIdx in range(nGenes):
         geneAltCounts = []
         geneProbs = []
@@ -325,21 +307,10 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
             rrSamples[2] = rrSamples[1]
         elif affects == 3:
             rrSamples = rrsShared[geneIdx]
-
-        probVgivenDs = pVgivenDapprox(rrSamples, afs[geneIdx])
-        probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
-
-        p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
-
-        totalProbability = p.sum()
-
-        assert (abs(totalProbability-afs[geneIdx]) / afs[geneIdx]) <= 1e-6
-        marginalAlleleCount = int(totalProbability * totalSamples)
-
-        altCountsGene = Multinomial(
-            probs=p, total_count=marginalAlleleCount).sample().numpy()
-
-        altCounts.append(altCountsGene)
+        
+        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, af = afs[geneIdx], pDs = pDs)
+       
+        altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
         rrAll.append(rrSamples)
     altCounts = tensor(altCounts)
@@ -351,8 +322,6 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
 # Like 6, but only 2 groups of genes, those that affect 1only, or 2only. Samples that have both conditions just get rr1 in 1 genes, rr2 in 2 genes
 # so the trick is that we have no 3rd component to infer; our algorithm should place minimal weight on that component
 # if given 3 diseaseFractions, 3rd is ignored
-
-
 def v6twoComponents(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
@@ -389,6 +358,7 @@ def v6twoComponents(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afM
 
     totalSamples = int(nCtrls + nCases.sum())
     print("totalSamples", totalSamples)
+
     for geneIdx in range(nGenes):
         geneAltCounts = []
         geneProbs = []
@@ -425,26 +395,10 @@ def v6twoComponents(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afM
             #             print(f"affects2: {geneIdx}")
             rrSamples[1] = rrs[geneIdx, 1]
             rrSamples[2] = rrSamples[1]
-#         print("affects", affects, "rrSamples", rrSamples)
-        probVgivenDs = pVgivenDapprox(rrSamples, afs[geneIdx])
-        probVgivenNotD = pVgivenNotD(pDs, afs[geneIdx], probVgivenDs)
 
-        p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, af = afs[geneIdx], pDs = pDs)
 
-        totalProbability = p.sum()
-#         print("af", afs[geneIdx], "probVgivenDs", probVgivenDs, "pDs", pDs, "probVgivenNotD", probVgivenNotD, "totalProbability", totalProbability)
-#         print("abs(totalProbability-afs[geneIdx]) / afs[geneIdx]", abs(totalProbability-afs[geneIdx]) / afs[geneIdx])
-        assert (abs(totalProbability-afs[geneIdx]) / afs[geneIdx]) <= 1e-6
-        marginalAlleleCount = int(totalProbability * totalSamples)
-#         print("marginal allele count", marginalAlleleCount)
-
-#         print("probs", probs)
-        # without .numpy() can't later convert tensor(altCounts) : "only tensors can be converted to Python scalars"
-        altCountsGene = Multinomial(
-            probs=p, total_count=marginalAlleleCount).sample().numpy()
-
-#         print("altCountsGene", altCountsGene)
-        altCounts.append(altCountsGene)
+        altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
         rrAll.append(rrSamples)
     altCounts = tensor(altCounts)
@@ -457,8 +411,6 @@ def v6twoComponents(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afM
 # and in the multionmial setting, we use only a single sample size
 # for instance, lets say we have 500k controls, 1000 cases
 # the P(V|D) (cases) may be .0001 and P(V|!D) may  .0001, but the probability in a multinomial should really be 99.9999% in favor of controls
-
-
 def v7(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,

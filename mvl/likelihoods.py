@@ -63,11 +63,12 @@ def pDgivenV(pD, pVgivenD, pV):
 # pDs[0] is P(!D), prob control
 
 
-def nullLikelihood(pDs, altCounts):
-    return torch.exp(Multinomial(probs=pDs).log_prob(altCounts))
+def nullLikelihood(pDsAll, altCounts):
+    return torch.exp(Multinomial(probs=pDsAll).log_prob(altCounts))
 
 
 def effectLikelihood(nHypotheses, pDs, altCountsFlat):
+    print("IN: altCountsFlat", altCountsFlat.shape)
     nGenes = altCountsFlat.shape[0]
     nConditions = altCountsFlat.shape[1]
 

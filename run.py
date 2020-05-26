@@ -24,4 +24,4 @@ if __name__ == "__main__":
 
     res = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[20, 15, 5]]), pis=tensor([[.05, .05, .05]]), pDs=tensor([.01, .01, .002]),
                      nCases=tensor([5e4, 5e4, 2e4]), nCtrls=tensor(3e5), afMean = 1e-5, nIterations=100)
-    np.save(f"simulation-res-{date.today().__str__()}", res)
+    np.save(f"test-blah-res-{date.today().__str__()}", res)
