@@ -17,7 +17,7 @@ from matplotlib import pyplot
 
 from collections import namedtuple
 
-from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT
+from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT, inferPDGivenVfromAlphas, empiricalPDGivenV
 from pyper import *
 
 import time
@@ -135,7 +135,7 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 
 # Like 5, but make approximation that P(V|D) = P(V)*rr, by observing that rr*P(D|V) + 1-P(V) is ~1 for intermediate rr and small P(V)
 # say a typical P(V|D) is ~
-def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000):
+def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), **kwargs):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
           "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
@@ -225,12 +225,12 @@ def v6(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape, nGenes=20000,
-             covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]])):
+def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrMeans = tensor([3, 3,  3]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
+             covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), **kwargs):
     covSharedStr = ",".join([str(x) for x in covShared.view(-1).numpy()])
     covSingleStr = ",".join([str(x) for x in covSingle.view(-1).numpy()])
     # TODO: assert shapes match
-    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape, "afMean", afMean,
+    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "afMean", afMean,
           "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs, "covShared", covShared, "covSingle", covSingle)
     print("\n\ntest tensor", covSharedStr)
     nConditions = len(nCases)
@@ -249,7 +249,9 @@ def v6normal(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, af
       ''')
     rrsShared = tensor(r.get('rrsShared'))
     rrsOne = tensor(r.get('rrsOne'))
-    print(rrsShared)
+    print("rrsShared", rrsShared, "means", rrsShared.mean(0))
+    print("rrShared correlation 1 & 2", np.corrcoef(rrsShared[:,0], rrsShared[:,1]))
+    print("rrShared correlation 1 & 3", np.corrcoef(rrsShared[:,0], rrsShared[:,2]))
 
     # shape == [nGenes, nConditions]
     afs = afDist.sample([nGenes, ])
@@ -548,7 +550,7 @@ def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3.
     if pDs is None:
         pDs = nCases / (nCases.sum() + nCtrls)
     print("pDs are:", pDs)
-
+    print("covShared is", covShared)
     return [{
         "nGenes": nGenes,
         "nCases": nCases,
@@ -559,6 +561,8 @@ def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3.
         "rrMeans": rrMeans,
         "afShape": afShape,
         "afMean": afMean,
+        "covShared": covShared,
+        "covSingle": covSingle,
     }]
 
 
@@ -583,7 +587,9 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              fitMethod='annealing', nEpochs=20, mt=False,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
              covSingle=tensor([[1, 0], [0, 1]]),
-             nIterations=100):
+             nIterations=100,
+             nEpochsPerIteration=1,
+             runName="run"):
     import os
     from os import path
     from datetime import date
@@ -592,9 +598,18 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
 
     results = []
 
-    folder = str(date.today()) + str(int(time.time()))
+    folder = runName + "_" + str(date.today()) + str(int(time.time()))
     os.makedirs(folder, exist_ok=True)
-
+    # allInferredParams = []
+    # pis = []
+    # alphas = []
+    # pdv1true = []
+    # pdv2true = []
+    # pdv3true = []
+    # pdv1inf = []
+    # pdv2inf = []
+    # pdv3inf = []
+    print('covShared in runSimMT is', covShared)
     with Pool(cpu_count()) as p:
         y = 0
         for rrsSimRun in rrs:
@@ -614,7 +629,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 start = time.time()
                 for i in range(nIterations):
                     processors.append(p.apply_async(
-                        processor, (i, paramsRun, generatingFn, fitMethod), callback=lambda res: simRes["runs"].append(res)))
+                        processor, (i, paramsRun, generatingFn, fitMethod, False, nEpochsPerIteration), callback=lambda res: simRes["runs"].append(res)))
                 # Wait for the asynchrounous reader threads to finish
                 
                 [r.get() for r in processors]
@@ -623,17 +638,51 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 print(f"simulation took {time.time() - start}s")
                 np.save(path.join(folder_inner, "data"), simRes)
 
+                # br["pis"] = inferredPis
+                # br["alphas"] = inferredAlphas
+                # br["PDV_c1true"] = c1true
+                # br["PDV_c2true"] = c2true
+                # br["PDV_cBothTrue"] = cBothTrue
+                # br["PDV_c1inferred"] = c1inferred
+                # br["PDV_c2inferred"] = c2inferred
+                # br["PDV_cBothInferred"] = cBothInferred
+                # for res in simRes["runs"]:
+                #     bestRes = res["results"]["bestRes"]
+                #     pis.append(bestRes['pis'])
+                #     alphas.append(bestRes['alphas'])
+        
+                #     pdv1true.append(bestRes['PDV_c1true'])
+                #     pdv2true.append(bestRes['PDV_c2true'])
+                #     pdv3true.append(bestRes['PDV_cBothTrue'])
+
+                #     pdv1inf.append(bestRes['PDV_c1inferred'])
+                #     pdv2inf.append(bestRes['PDV_c2inferred'])
+                #     pdv3inf.append(bestRes['PDV_cBothInferred'])
+
                 results.append(paramsRun)
                 y += 1
                 
         print("Done")
         print(results)
+        # print("pdv3inf")
+
+        # pis = tensor(pis)
+        # alphas = tensor(alphas)
+
+        # pdv1true = tensor(pdv1true)
+        # pdv2true.append(bestRes['PDV_c2true'])
+        # pdv3true.append(bestRes['PDV_cBothTrue'])
+
+        # pdv1inf.append(bestRes['PDV_c1inferred'])
+        # pdv2inf.append(bestRes['PDV_c2inferred'])
+        # pdv3inf.append(bestRes['PDV_cBothInferred'])
 
         np.save(os.path.join(folder, "results_list"), results)
 
         return results
 
 def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=False, nEpochs=1):
+    print("in runSimIteration params are", paramsRun)
     # In DSB:
     # 	No ID	ID
     #         ASD+ADHD	684	217
@@ -669,6 +718,7 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=
    
     try:
         start = time.time()
+        print(f"generating simulation using {generatingFn} using params: {paramsRun}")
         r = generatingFn(**paramsRun)
         print("took", time.time() - start)
     except Exception as e:
@@ -712,24 +762,10 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=
     inferredAlphas = tensor(bestRes[3:])  # 4-vector, idx0 is P(!D|V)
 
     #### Calculate actual ###
-    component1Afs = afsRun[affectedGenesRun[0]]
-    c1true = (component1Afs / afMeanRun).mean(0)
-
-    component2Afs = afsRun[affectedGenesRun[1]]
-    c2true = (component2Afs / afMeanRun).mean(0)
-
-    componentBothAfs = afsRun[affectedGenesRun[2]]
-    cBothTrue = (componentBothAfs / afMeanRun).mean(0)
+    c1true, c2true, cBothTrue = empiricalPDGivenV(afsRun, affectedGenesRun, afMeanRun)
 
     # calculate inferred values
-    pds = tensor([1-pDsRun.sum(), *pDsRun])
-    alphas = inferredAlphas.numpy()
-    c1inferred = Dirichlet(tensor(
-        [alphas[0], alphas[1], alphas[0], alphas[2]]) * pds).sample([10_000]).mean(0)
-    c2inferred = Dirichlet(tensor(
-        [alphas[0], alphas[0], alphas[2], alphas[2]]) * pds).sample([10_000]).mean(0)
-    cBothInferred = Dirichlet(tensor([alphas[0], (alphas[1] + alphas[3]), (alphas[2] + alphas[3]),
-                                      (alphas[1] + alphas[2] + alphas[3])]) * pds).sample([10_000]).mean(0)
+    c1inferred, c2inferred, cBothInferred = inferPDGivenVfromAlphas(inferredAlphas, pDsRun)
 
     print(f"\n\nrun results for rrs: {rrMeansRun}, pis: {pisRun}")
 
