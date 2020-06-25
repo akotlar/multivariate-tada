@@ -44,7 +44,7 @@ def pVgivenNotD(pD, pV, pVgivenD):
     p = (pV - (pD*pVgivenD).sum()) / (1 - pD.sum())
     if(p < 0):
         raise ValueError(
-            f"pVgivenNotD: invalid params: pD: {pD}, pV: {pV}, pVgivenD: {pVgivenD} yield: p = {p}")
+            f"pVgivenNotD: invalid params: pD: {pD}, pV: {pV}, pVgivenD: {pVgivenD}, (pD*pVgivenD).sum(): {(pD*pVgivenD).sum()} yield: p = {p}")
     return p
 
 # def pVgivenNotD(pD, pV, pVgivenD):
@@ -83,6 +83,11 @@ def empiricalPDGivenV(afs, affectedGenes, truePV):
 
     return c1true, c2true, cBothTrue    
 
+def getAlphas(fit):
+    return tensor(fit["params"][0][3:])
+    
+def getPis(fit):
+    return tensor(fit["params"][0][:3])
 
 def nullLikelihoodLog(pDsAll, altCounts):
     return Multinomial(probs=pDsAll).log_prob(altCounts)
@@ -137,7 +142,7 @@ def effectLikelihood(nHypotheses, pDs, altCountsFlat):
         # try to stay in the log space; avoid numeric underflow, until bayes factor calc
         return torch.exp(DirichletMultinomial(total_count=nShaped, concentration=concentrations).log_prob(altCountsShaped))
 
-    def likelihoodFnSimpleNoLatent(alpha0, alpha1, alpha2):
+    def likelihoodFnSimpleNoLatent(alpha0, alpha1, alpha2, *args):
         concentrations = pdsAllShaped * tensor([
             [alpha0, alpha1, alpha0, alpha1], #H1
             [alpha0, alpha0, alpha2, alpha2], #H2

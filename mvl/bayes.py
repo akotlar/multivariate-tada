@@ -31,8 +31,8 @@ from matplotlib import pyplot
 
 # this gives P(H0)/P(H1), rather that bfNullGene P(H1)/P(H0) above
 
-
-def bfNullGenePosterior(alphas, pis, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tensor(1e5), af=1e-4, pDs=None, nIterations=tensor([10_000]), ):
+def genNullData(alphas, pis, nCases, nCtrls, afMean=1e-4, pDs=None, nIterations=tensor([20_000]), **kwargs):
+    print("Params:", alphas, pis, nCases, nCtrls, afMean, pDs, nIterations)
     totalSamples = nCases.sum() + nCtrls
 
     if pDs is None:
@@ -40,7 +40,11 @@ def bfNullGenePosterior(alphas, pis, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tens
 
     rrs = tensor([1., 1., 1.])
     altCounts, p = genAlleleCount(
-        totalSamples=totalSamples, rrs=rrs, af=1e-4, pDs=pDs, sampleShape=nIterations, approx=True)
+        totalSamples=totalSamples, rrs=rrs, afMean=afMean, pDs=pDs, sampleShape=nIterations, approx=True)
+    return altCounts, p
+
+def bfNullGenePosterior(alphas, pis, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tensor(1e5), afMean=1e-4, pDs=None, nIterations=tensor([10_000]), **kwargs):
+    altCounts, _ = genNullData(alphas, pis, nCases, nCtrls, afMean, pDs, nIterations)
 
     bf = bfdp(altCounts, pDs, alphas, pis)
     # print(altCounts.shape)
@@ -48,10 +52,10 @@ def bfNullGenePosterior(alphas, pis, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tens
     return bf, altCounts
 
 
-def bfNullGenePosteriorFlatPrior(alphas, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tensor(1e5), af=1e-4, pDs=None, nIterations=tensor([10_000]), nAlternateHypotheses=3):
+def bfNullGenePosteriorFlatPrior(alphas, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=tensor(1e5), afMean=1e-4, pDs=None, nIterations=tensor([10_000]), nAlternateHypotheses=3, **kwargs):
     nHypotheses = nAlternateHypotheses + 1
     pis = tensor(1 / nHypotheses).expand([nAlternateHypotheses, ])
-    return bfNullGenePosterior(alphas, pis, nCases, nCtrls, af, pDs, nIterations)
+    return bfNullGenePosterior(alphas, pis, nCases, nCtrls, afMean, pDs, nIterations)
 
 # Doesn't seem to produce desired results...at least with altCounts that are largely 0's..
 # def permutedGeneCountBFs(altCounts, alphas, pDs):
@@ -119,7 +123,7 @@ def bfNullGenePosteriorFlatPrior(alphas, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=
 # (rather than belonging to any one class)
 
 
-def genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1, affectedGenes2, affectedGenesBoth):
+def genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1, affectedGenes2, affectedGenesBoth, name):
     from sklearn.metrics import auc
     # Precision recall curve generator
     ###### TODO: place into bayes.py ######
@@ -227,10 +231,12 @@ def genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1, affectedGenes2, affect
     pyplot.legend([f"Overall AUC={aucScoreAll}", f"Gene1 AUC={aucScore1}",
                    f"Gene2 AUC={aucScore2}", f"GeneBoth AUC={aucScoreBoth}"])
 
+    pyplot.savefig(name)
+
 
 # ROC AUC curve for classifying a risk gene as a risk gene
 # (rather than belonging to any one class)
-def genAucRocSingleGene(bfdpNull, affectedGenes1, affectedGenes2, affectedGenesBoth):
+def genAucRocSingleGene(bfdpNull, affectedGenes1, affectedGenes2, affectedGenesBoth, name):
     from sklearn.metrics import auc
     # Precision recall curve generator
     ###### TODO: place into bayes.py ######
@@ -314,6 +320,8 @@ def genAucRocSingleGene(bfdpNull, affectedGenes1, affectedGenes2, affectedGenesB
     pyplot.legend([f"Overall AUC={aucScoreAll}", f"Gene1 AUC={aucScore1}",
                    f"Gene2 AUC={aucScore2}", f"GeneBoth AUC={aucScoreBoth}"])
 
+    pyplot.savefig(name)
+
 
 def bfdpThreshold(alphas, pis, nCases, nCtrls, afMean, pDs, targetFDR=.1, nIterations=tensor([50_000])):
     bfdpNull, _ = bfNullGenePosterior(
@@ -333,12 +341,34 @@ def bfdpThreshold(alphas, pis, nCases, nCtrls, afMean, pDs, targetFDR=.1, nItera
         fdr = len(torch.nonzero(mask)) / total
 
         if fdr <= targetFDR:
-            print("empirical p", bfTest, fdr)
+            print("empirical fdr", bfTest, fdr)
             bfNeeded = bfTest
             break
 
     bfNeededH0vsHA = 1 / bfNeeded
     return bfNeededH0vsHA, fdr
+
+
+def bfdpThreshold2(bfdpNull, alphas, pis, nCases, nCtrls, afMean, pDs, targetFDR=.1, nIterations=tensor([50_000]), **kwargs):
+    bfNeeded = 0
+    bfdpNullHAvsH0 = 1 / bfdpNull
+    total = len(bfdpNullHAvsH0)
+    divisor = 50_000
+    targetFDR = .1
+    fdr = 0
+    seen = False
+    for bf in range(int(divisor / 2), divisor * 100, 1):
+        bfTest = bf / divisor
+        mask = bfdpNullHAvsH0 > bfTest
+
+        fdr = len(torch.nonzero(mask)) / total
+
+        if fdr <= targetFDR:
+            print("empirical fdr", bfTest, fdr)
+            bfNeeded = bfTest
+            break
+
+    return 1/bfNeeded, fdr
 
 # https://projecteuclid.org/download/pdf_1/euclid.lnms/1215540968
 
@@ -377,6 +407,25 @@ def bfdp(altCounts, pDs, alphas, pis, nAlternateHypotheses=3):
     # print("denominator", denominator)
     # print("denominator/.sum(1)", denominator.sum(1))
     # print("res", res)
+
+    return res
+
+def bfdpOneAltHypothesis(altCounts, pDs, alphas, pis, nAlternateHypotheses=3, hIdx=0):
+    print("altCounts", altCounts.size())
+    assert(nAlternateHypotheses == 3)
+    likelihoodFn, nullLikes, likelihoodFnSimpleNoLatent = effectLikelihood(
+        nAlternateHypotheses + 1, pDs=pDs, altCountsFlat=altCounts)
+
+    effectLikes = likelihoodFn(*alphas)
+    nullLikes = nullLikelihood(tensor([1 - pDs.sum(), *pDs]), altCounts)
+    print("effectLikes", effectLikes.shape)
+    piNull = 1 - pis.sum()
+
+    null = piNull * nullLikes
+
+    alt = pis * effectLikes
+
+    res = alt[:, hIdx] / (null + alt.sum(1))
 
     return res
 
