@@ -586,7 +586,7 @@ def processor(i, params, *args):
 def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              nCases=tensor([15e3, 15e3, 6e3]), nCtrls=tensor(3e5), afMean=1e-4,
              rrShape=tensor(50.), afShape=tensor(50.), pDs = None, generatingFn=v6normal,
-             fitMethod='annealing', nEpochs=20, mt=False,
+             fitMethod='nelder-mead', nEpochs=20, mt=False,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
              covSingle=tensor([[1, 0], [0, 1]]),
              nIterations=100,
@@ -598,6 +598,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
     import time
     import json
 
+    params = []
     results = []
 
     folder = runName + "_" + str(date.today()) + str(int(time.time()))
@@ -639,6 +640,9 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 print(f"finished sim of params: {paramsRun}")
                 print(f"simulation took {time.time() - start}s")
                 np.save(path.join(folder_inner, "data"), simRes)
+                results.append(simRes)
+                params.append(paramsRun)
+                y += 1
 
                 # br["pis"] = inferredPis
                 # br["alphas"] = inferredAlphas
@@ -661,11 +665,10 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 #     pdv2inf.append(bestRes['PDV_c2inferred'])
                 #     pdv3inf.append(bestRes['PDV_cBothInferred'])
 
-                results.append(paramsRun)
-                y += 1
                 
-        print("Done")
-        print(results)
+                
+        
+        # print(results)
         # print("pdv3inf")
 
         # pis = tensor(pis)
@@ -679,7 +682,10 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
         # pdv2inf.append(bestRes['PDV_c2inferred'])
         # pdv3inf.append(bestRes['PDV_cBothInferred'])
 
+        np.save(os.path.join(folder, "params_list"), params)
         np.save(os.path.join(folder, "results_list"), results)
+
+        print("Done")
 
         return results
 

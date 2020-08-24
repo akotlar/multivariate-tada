@@ -47,7 +47,7 @@ def pVgivenNotD(pD, pV, pVgivenD):
             f"pVgivenNotD: invalid params: pD: {pD}, pV: {pV}, pVgivenD: {pVgivenD}, (pD*pVgivenD).sum(): {(pD*pVgivenD).sum()} yield: p = {p}")
     return p
 
-# def pVgivenNotD(pD, pV, pVgivenD):
+# def pVgivenNotD(pD, pV, pVgixvenD):
 #     p = (pV - (pD*pVgivenD)) / (1 - pD)
 #     assert(p >= 0)
 #     return p
@@ -56,18 +56,42 @@ def pVgivenNotD(pD, pV, pVgivenD):
 def pDgivenV(pD, pVgivenD, pV):
     return pVgivenD * pD / pV
 
+def trueVsEst(inferred, input, params):
+    pDgivenVest = inferPDGivenVfromAlphas(tensor(inferred["params"][0][3:]), pds=params["pDs"])
+    pDgivenVestVar = inferPDGivenVfromAlphasVar(tensor(inferred["params"][0][3:]), pds=params["pDs"])
+    truePDGivenV = empiricalPDGivenV(input["afs"], affectedGenes=input["affectedGenes"],truePV=params["afMean"])
 
-def inferPDGivenVfromAlphas(alphasTensor, pds):
+    print("est pis:", inferred["params"][0][0:3])
+    print("tru pis:", params["diseaseFractions"])
+
+    for i in range(len(pDgivenVest)):
+        print(f"\n\nEstimate for component: {i}")
+        print("est:", "P(D|V)", pDgivenVest[i], "variance:",  pDgivenVestVar[i], "alphas:", pDgivenVest[i])
+        print("tru:", "P(D|V)", truePDGivenV[i], "alphas:", truePDGivenV[i])
+
+    return pDgivenVest, pDgivenVestVar, truePDGivenV
+
+def getDirichlets(alphasTensor, pds):
     pdsAll = tensor([1-pds.sum(), *pds])
     alphas = alphasTensor.numpy()
     c1inferred = Dirichlet(tensor(
-        [alphas[0], alphas[1], alphas[0], alphas[2]]) * pdsAll).sample([10_000]).mean(0)
+        [alphas[0], alphas[1], alphas[0], alphas[2]]) * pdsAll)
     c2inferred = Dirichlet(tensor(
-        [alphas[0], alphas[0], alphas[2], alphas[2]]) * pdsAll).sample([10_000]).mean(0)
+        [alphas[0], alphas[0], alphas[2], alphas[2]]) * pdsAll)
     cBothInferred = Dirichlet(tensor([alphas[0], (alphas[1] + alphas[3]), (alphas[2] + alphas[3]),
-                                      (alphas[1] + alphas[2] + alphas[3])]) * pdsAll).sample([10_000]).mean(0)
+                                      (alphas[1] + alphas[2] + alphas[3])]) * pdsAll)
 
     return c1inferred, c2inferred, cBothInferred
+    
+def inferPDGivenVfromAlphas(alphasTensor, pds):
+    c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, pds)
+    print(c1inferred.mean.numpy())
+    return [c1inferred.mean.numpy(), c2inferred.mean.numpy(), cBothInferred.mean.numpy()]
+
+
+def inferPDGivenVfromAlphasVar(alphasTensor, pds):
+    c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, pds)
+    return [c1inferred.variance.numpy(), c2inferred.variance.numpy(), cBothInferred.variance.numpy()]
 
 # TODO: generalize to N components
 # truePV = true allele frequency
@@ -80,8 +104,7 @@ def empiricalPDGivenV(afs, affectedGenes, truePV):
 
     componentBothAfs = afs[affectedGenes[2]]
     cBothTrue = (componentBothAfs / truePV).mean(0)         
-
-    return c1true, c2true, cBothTrue    
+    return [c1true.numpy(), c2true.numpy(), cBothTrue.numpy()]   
 
 def getAlphas(fit):
     return tensor(fit["params"][0][3:])
@@ -90,6 +113,8 @@ def getPis(fit):
     return tensor(fit["params"][0][:3])
 
 def nullLikelihoodLog(pDsAll, altCounts):
+    print("pDS are", pDsAll)
+    print("altCounts are", altCounts)
     return Multinomial(probs=pDsAll).log_prob(altCounts)
 
 def nullLikelihood(pDsAll, altCounts):
@@ -241,7 +266,29 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
         ll = -torch.log(h0 + hs.sum(1)).sum()
         trajectoryLLs.append(ll)
         return ll
-    return jointLikelihood     
+
+    def jointLikelihoodSimple(params):
+        pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+
+        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+            return float("inf")
+
+        pi0 = 1.0 - (pi1 + pi2 + piBoth)
+
+        if pi0 < 0:
+            return float("inf")
+
+        h0 = pi0 * allNull2
+
+        trajectoryPis.append([pi1, pi2, piBoth])
+        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+        
+        hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFnNoLatent(alpha0, alpha1, alpha2, alphaBoth)
+
+        ll = -torch.log(h0 + hs.sum(1)).sum()
+        trajectoryLLs.append(ll)
+        return ll
+    return jointLikelihood, jointLikelihoodSimple   
 
 def writer(i, q, results):
     message = f"I am Process {i}"
@@ -258,9 +305,9 @@ def processor(i, *args, **kwargs):
     return r
 
 
-def fitFnBivariateMT(altCountsFlat, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead"):
+def fitFnBivariateMT(altCountsFlat, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead", checkSimpleModel = False):
     args = [altCountsFlat, pDs, 1, minLLThresholdCount,
-            K, debug, costFnIdx, method]
+            K, debug, costFnIdx, method, checkSimpleModel]
 
     results = []
 
@@ -271,20 +318,21 @@ def fitFnBivariateMT(altCountsFlat, pDs, nEpochs=20, minLLThresholdCount=100, K=
                 processor, (i, *args), callback=lambda res: results.append(res)))
         # Wait for the asynchrounous reader threads to finish
         [r.get() for r in processors]
-        print("Got results")
 
-        print(results)
         return results
 
 # TODO: maybe beta distribution should be constrained such that variance is that of the data?
 # or maybe there's an analog to 0 mean liability variance
 
 
-def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead"):
+def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, costFnIdx=0, method="nelder-mead", checkSimpleModel = False):
     trajectoryPis = []
     trajectoryAlphas = []
     trajectoryLLs = []
-    costFn = likelihoodBivariateFast(altCountsByGene, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs)
+    trajectoryPisSimple = []
+    trajectoryAlphasSimple = []
+    trajectoryLLsSimple = []
+    costFn, costFnSimple = likelihoodBivariateFast(altCountsByGene, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs)
     print("method", method, "costFn", costFn)
 
     assert(method == "nelder-mead" or method ==
@@ -303,7 +351,7 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=
     # P(V|D) * P(D) / P(V)
     pi0Dist = Uniform(.5, 1)
     alphasDist = Uniform(100, 25000)
-
+    fitSimple = None
     for i in range(nEpochs):
         start = time.time()
 
@@ -326,8 +374,13 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=20, minLLThresholdCount=100, K=
             if method == "nelder-mead":
                 fit = scipy.optimize.minimize(
                     costFn, x0=bestParams, method='Nelder-Mead', options={"maxiter": 20000, "adaptive": True})
+                if checkSimpleModel:
+                    fitSimple = scipy.optimize.minimize(
+                        costFnSimple, x0=bestParams, method='Nelder-Mead', options={"maxiter": 20000, "adaptive": True})
             elif method == "basinhopping":
                 fit = scipy.optimize.basinhopping(costFn, x0=bestParams)
+                if checkSimpleModel:
+                    fitSimple = scipy.optimize.basinhopping(costFnSimple, x0=bestParams)
             else:
                 raise Exception("should have been nelder-mead or basinhopping")
         elif method == "annealing":

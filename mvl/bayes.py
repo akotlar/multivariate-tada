@@ -1,4 +1,4 @@
-from .likelihoods import nullLikelihood, effectLikelihood
+from .likelihoods import nullLikelihood, effectLikelihood, getAlphas, getPis
 from .genData import genAlleleCount
 from torch.distributions import Binomial
 from torch import tensor, randperm, sort, cumsum
@@ -122,6 +122,17 @@ def bfNullGenePosteriorFlatPrior(alphas, nCases=tensor([1e4, 1e4, 4e3]), nCtrls=
 # ROC AUC curve for classifying a risk gene as a risk gene
 # (rather than belonging to any one class)
 
+def aucROC(fit, input, params, name):
+    bfdpNull, altCountsNullBfPerm = bfNullGenePosterior(getAlphas(fit), getPis(fit), nIterations=tensor([50_000]), **params)
+    bfdpData = bfdp(altCounts=input["altCounts"], pDs=params["pDs"], alphas=tensor(fit["params"][0][3:]), pis=tensor(fit["params"][0][0:3]), )
+
+    genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1=tensor(input["affectedGenes"][0]), affectedGenes2=tensor(input["affectedGenes"][1]), affectedGenesBoth=tensor(input["affectedGenes"][2]), name=name)
+
+def aucROCflatPrior(fit, input, params, name):
+    bfdpNull, altCountsNullBfPerm = bfNullGenePosteriorFlatPrior(getAlphas(fit), nIterations=tensor([50_000]), **params)
+    bfdpData = bfdpFlatPrior(altCounts=input["altCounts"], pDs=params["pDs"], alphas=tensor(fit["params"][0][3:]))
+
+    genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1=tensor(input["affectedGenes"][0]), affectedGenes2=tensor(input["affectedGenes"][1]), affectedGenesBoth=tensor(input["affectedGenes"][2]), name=name)
 
 def genAucRocRiskGene(bfdpNull, bfdpData, affectedGenes1, affectedGenes2, affectedGenesBoth, name):
     from sklearn.metrics import auc
