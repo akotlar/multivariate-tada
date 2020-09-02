@@ -17,7 +17,7 @@ from matplotlib import pyplot
 
 from collections import namedtuple
 
-from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT, inferPDGivenVfromAlphas, empiricalPDGivenV
+from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT, fitFnBivariateStacked, fitFnBivariateStackedDirichlet, inferPDGivenVfromAlphas, empiricalPDGivenV
 from pyper import *
 
 import time
@@ -210,6 +210,97 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
             rrSamples[1] = rrs[geneIdx, 1]
             rrSamples[2] = rrSamples[1]
         elif affects == 3:
+            # print("affects 3")
+            #             print(f"affects2: {geneIdx}")
+            rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
+            rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
+            rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
+
+        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+
+        altCounts.append(altCountsGene.numpy())
+        probs.append(p.numpy())
+        rrAll.append(rrSamples)
+    altCounts = tensor(altCounts)
+    probs = tensor(probs)
+
+    # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
+    return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
+
+def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, **kwargs):
+    # TODO: assert shapes match
+    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
+          "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
+
+    nConditions = len(nCases)
+    assert(nConditions == 3)
+    altCounts = []
+    probs = []
+    afDist = Gamma(concentration=afShape, rate=afShape/afMean)
+    rrDist = Gamma(concentration=rrShape, rate=rrShape/rrMeans)
+    print("rrDist mean", rrDist.sample([10_000, ]).mean(0))
+#     rrNullDist = Gamma(concentration=rrShape,rate=rrShape.expand(nConditions))
+
+    # shape == [nGenes, nConditions]
+    afs = afDist.sample([nGenes, ])
+    rrs = rrDist.sample([nGenes, ])
+
+    endIndices = nGenes * diseaseFractions
+    startIndices = []
+    for i in range(len(diseaseFractions)):
+        if i == 0:
+            startIndices.append(0)
+            continue
+        endIndices[i] += endIndices[i-1]
+        startIndices.append(endIndices[i-1])
+
+    print("startIndices", startIndices, "endIndices", endIndices)
+
+    affectedGenes = [[]]
+    unaffectedGenes = []
+    rrAll = []
+
+    totalSamples = int(nCtrls + nCases.sum())
+    print("totalSamples", totalSamples)
+    for geneIdx in range(nGenes):
+        geneAltCounts = []
+        geneProbs = []
+        affects = 0
+        rrSamples = tensor([1., 1., 1.])
+        # Each gene gets only 1 state: affects condition 1 only, condition 2 only, or both
+        # currently, in the both case, the increased in counts (rr) is. the same for both conditions
+        for conditionIdx in range(nConditions):
+            if geneIdx >= startIndices[conditionIdx] and geneIdx < endIndices[conditionIdx]:
+                if conditionIdx == 0:
+                    affects = 1
+                elif conditionIdx == 1:
+                    affects = 2
+                elif conditionIdx == 2:
+                    affects = 3
+                else:
+                    assert(conditionIdx <= 2)
+
+                if len(affectedGenes) <= conditionIdx:
+                    affectedGenes.append([])
+                affectedGenes[conditionIdx].append(geneIdx)
+                break
+
+        assert(affects <= 3)
+        # gene affects one of 3 states
+        # based on which state it affects, sampleCase1, samplesCase2, samplesBoth get different rrs for this gene
+        # controls always get the same value, and that is based on 1 - sum(rrs)
+        if affects == 0:
+            unaffectedGenes.append(geneIdx)
+        elif affects == 1:
+            #             print(f"affects1: {geneIdx}")
+            rrSamples[0] = rrs[geneIdx, 0]
+            rrSamples[2] = rrSamples[0]
+        elif affects == 2:
+            #             print(f"affects2: {geneIdx}")
+            rrSamples[1] = rrs[geneIdx, 1]
+            rrSamples[2] = rrSamples[1]
+        elif affects == 3:
+            # print("affects 3")
             #             print(f"affects2: {geneIdx}")
             rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
@@ -576,10 +667,11 @@ def writer(i, q, results):
     return m
 
 
-def processor(i, params, *args):
+def processor(i, params, kwargs):
+    print("kwargs", kwargs)
     np.random.seed()
     torch.manual_seed(np.random.randint(1e9))
-    r = runSimIteration(params, *args)
+    r = runSimIteration(params, **kwargs)
     return r
 
 
@@ -591,7 +683,9 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              covSingle=tensor([[1, 0], [0, 1]]),
              nIterations=100,
              nEpochsPerIteration=1,
-             runName="run"):
+             runName="run",
+             stacked=False,
+             piPrior=False):
     import os
     from os import path
     from datetime import date
@@ -631,8 +725,9 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
 
                 start = time.time()
                 for i in range(nIterations):
+                    # def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', mt=False, nEpochs=1, stacked=False):
                     processors.append(p.apply_async(
-                        processor, (i, paramsRun, generatingFn, fitMethod, False, nEpochsPerIteration), callback=lambda res: simRes["runs"].append(res)))
+                        processor, (i, paramsRun, {"generatingFn": generatingFn, "fitMethod": fitMethod, "mt": False, "nEpochs": nEpochsPerIteration, "stacked": stacked, "piPrior": piPrior}), callback=lambda res: simRes["runs"].append(res)))
                 # Wait for the asynchrounous reader threads to finish
                 
                 [r.get() for r in processors]
@@ -689,7 +784,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
 
         return results
 
-def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=False, nEpochs=1):
+def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', mt=False, nEpochs=1, stacked=False, piPrior=False):
     print("in runSimIteration params are", paramsRun)
     # In DSB:
     # 	No ID	ID
@@ -749,7 +844,7 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=
     start = time.time()
     if mt is True:
         res = fitFnBivariateMT(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20,
-                               debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
+                               debug=True, costFnIdx=runCostFnIdx, method=fitMethod, stacked=stacked, piPrior=piPrior)
         bestRes = None
         bestLL = None
         for r in res:
@@ -761,8 +856,13 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='annealing', mt=
         print("bestRes", bestRes)
     else:
         # res here I think is different htan multi case
-        res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20,
-                             debug=True, costFnIdx=runCostFnIdx, method=fitMethod)
+        if piPrior and stacked:
+            res = fitFnBivariateStackedDirichlet(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True)
+        elif stacked:
+            res = fitFnBivariateStacked(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True)
+        else:
+            res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20,
+                                debug=True, method=fitMethod)
         bestRes = res["params"][-1]
     print("took", time.time() - start)
 

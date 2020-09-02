@@ -127,7 +127,44 @@ if __name__ == "__main__":
 #              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
 #              covSingle=tensor([[1, 0], [0, 1]]), runName="rr3,3,1_5_gamma_15kcases")
 
-    res = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    # res = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr1_5,1_5,1_5_gamma_15kcases")
+
+    # res1 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[1.5, 1.5, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr1_5,1_5,0_gamma_15kcases", stacked=False)
+    # print('res1-non-stacked', res1)
+    # res2 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[1.5, 1.5, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr1_5,1_5,0_gamma_15kcases_stacked", stacked=True)
+    # print('res2-stacked', res2)
+
+    # res1 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[1.5, 1.5, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(10.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr1_5,1_5,0_gamma_15kcases", stacked=False)
+    # print('res1-non-stacked', res1)
+
+
+    # res1 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[2, 2, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr3,3,0_gamma_15kcases_3e5ctrls", stacked=False)
+    # print('res1-non-stacked', res1)
+    # res2 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[2, 2, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr3,3,0_gamma_15kcases_3e5ctrls_stacked", stacked=True)
+    # res2 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[2, 2, 0]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
+    #                  nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
+    #          covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
+    #          covSingle=tensor([[1, 0], [0, 1]]), runName="rr3,3,0_gamma_15kcases_3e5ctrls_stacked_dirichlet_mean", stacked=True, piPrior=True)
+
+    res2 = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[2, 2, 2]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01, .002]),
                      nCases=tensor([1.5e4, 1.5e4, 6e3]), nCtrls=tensor(3e5), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
-             covSingle=tensor([[1, 0], [0, 1]]), runName="rr1_5,1_5,1_5_gamma_15kcases")
+             covSingle=tensor([[1, 0], [0, 1]]), runName="rr3,3,0_gamma_15kcases_3e5ctrls_stacked", stacked=True)
