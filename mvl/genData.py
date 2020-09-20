@@ -17,19 +17,31 @@ from matplotlib import pyplot
 
 from collections import namedtuple
 
-from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateMT, fitFnBivariateStacked, fitFnBivariateStackedDirichlet, inferPDGivenVfromAlphas, empiricalPDGivenV
+from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateA0, fitFnBivariateMT, fitFnBivariateStacked, fitFnBivariateStackedDirichlet, inferPDGivenVfromAlphas, empiricalPDGivenV
 from pyper import *
 
 import time
 seed = 0
 
 def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), sampleShape = (), approx = True, debug = False):
-    if approx:
-        probVgivenDs = pVgivenDapprox(rrs, afMean)
-    else:
-        probVgivenDs = pVgivenD(rrs, afMean)
+    # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
+    # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
+    # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
+    # P(D1|V) = P(V)rr1  * P(D1)
+    # P(D2|V) ...
+    # P(V|D)
+    probVgivenDs = pVgivenDapprox(rrs, afMean)
+   
     probVgivenNotD = pVgivenNotD(pDs, afMean, probVgivenDs)
 
+    # Q1: Is adding P(D|V) (where P(V) is fixed) ok; is adding risks ok.
+    #  - log space; lognormal; Correlated topic model (a followup to DirichletMultinomials)
+    # P(D|V)P(V)
+    # Where P(V) is alternate af for mutational class c (PTV)
+    
+    # Take logs of risk and add them together
+    # unusual to work on the probaiblities directly
+    # P(D)*P(V|D) = P(D|V)P(V)
     p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
     if debug:
         print(f"rrs: {rrs}, afMean: {afMean}, probVgivenNotD: {probVgivenNotD} probVgivenDs: {probVgivenDs} p: {p}")
@@ -137,10 +149,10 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
 
 # Like 5, but make approximation that P(V|D) = P(V)*rr, by observing that rr*P(D|V) + 1-P(V) is ~1 for intermediate rr and small P(V)
 # say a typical P(V|D) is ~
-def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, **kwargs):
+def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, rrtype="multiplicative", **kwargs):
     # TODO: assert shapes match
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
-          "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
+          "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs, "rrtype", rrtype)
 
     nConditions = len(nCases)
     assert(nConditions == 3)
@@ -210,11 +222,18 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
             rrSamples[1] = rrs[geneIdx, 1]
             rrSamples[2] = rrSamples[1]
         elif affects == 3:
-            # print("affects 3")
-            #             print(f"affects2: {geneIdx}")
-            rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
-            rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
-            rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
+            if rrtype == "multiplicative":
+                rrSamples[0] = rrs[geneIdx, 0] * rrs[geneIdx, 2]
+                rrSamples[1] = rrs[geneIdx, 1] * rrs[geneIdx, 2]
+                rrSamples[2] = rrs[geneIdx, 0] * rrs[geneIdx, 1] * rrs[geneIdx, 2]
+            elif rrtype == "unique":
+                rrSamples[0] = rrs[geneIdx, 0]
+                rrSamples[1] = rrs[geneIdx, 1]
+                rrSamples[2] = rrs[geneIdx, 2]
+            else:
+                rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
+                rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
+                rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
 
         altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
 
@@ -227,13 +246,21 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
-def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, **kwargs):
-    # TODO: assert shapes match
+# v6 with 3 components
+def v6_3(nCases, nCtrls, pDs = tensor([.01, .01, .01, .002, .002, .002, .002]), diseaseFractions = tensor([.05, .05, .05, .05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3., 1.5, 1.5, 1.5, 1.5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, **kwargs):
+    # TODO: build into matrix
+    lookup = {
+        "1": 0, "2": 1, "3": 2, "12": 3, "13": 4, "23": 5, "123": 6
+    }
+
+    nSampleTypes = len(lookup)
+    assert len(pDs) == nSampleTypes and len(diseaseFractions) == nSampleTypes and len(rrMeans) == nSampleTypes
+
     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
           "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs)
 
     nConditions = len(nCases)
-    assert(nConditions == 3)
+    assert(nConditions == nSampleTypes)
     altCounts = []
     probs = []
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
@@ -265,46 +292,88 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
     for geneIdx in range(nGenes):
         geneAltCounts = []
         geneProbs = []
-        affects = 0
-        rrSamples = tensor([1., 1., 1.])
+        affects = -1
+        rrSamples = tensor([1.]).repeat(nConditions)
         # Each gene gets only 1 state: affects condition 1 only, condition 2 only, or both
         # currently, in the both case, the increased in counts (rr) is. the same for both conditions
         for conditionIdx in range(nConditions):
             if geneIdx >= startIndices[conditionIdx] and geneIdx < endIndices[conditionIdx]:
-                if conditionIdx == 0:
-                    affects = 1
-                elif conditionIdx == 1:
-                    affects = 2
-                elif conditionIdx == 2:
-                    affects = 3
-                else:
-                    assert(conditionIdx <= 2)
+                affects = conditionIdx
 
                 if len(affectedGenes) <= conditionIdx:
                     affectedGenes.append([])
                 affectedGenes[conditionIdx].append(geneIdx)
                 break
 
-        assert(affects <= 3)
         # gene affects one of 3 states
         # based on which state it affects, sampleCase1, samplesCase2, samplesBoth get different rrs for this gene
         # controls always get the same value, and that is based on 1 - sum(rrs)
-        if affects == 0:
+        if affects == -1:
             unaffectedGenes.append(geneIdx)
-        elif affects == 1:
-            #             print(f"affects1: {geneIdx}")
-            rrSamples[0] = rrs[geneIdx, 0]
-            rrSamples[2] = rrSamples[0]
-        elif affects == 2:
-            #             print(f"affects2: {geneIdx}")
-            rrSamples[1] = rrs[geneIdx, 1]
-            rrSamples[2] = rrSamples[1]
-        elif affects == 3:
-            # print("affects 3")
-            #             print(f"affects2: {geneIdx}")
-            rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
-            rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
-            rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
+        elif affects == lookup["1"]:
+            effect = rrs[geneIdx, 0]
+            rrSamples[lookup["1"]] = effect
+            rrSamples[lookup["12"]] = effect
+            rrSamples[lookup["13"]] = effect
+            rrSamples[lookup["123"]] = effect
+        elif affects == lookup["2"]:
+            effect = rrs[geneIdx, 1]
+            rrSamples[lookup["2"]] = effect
+            rrSamples[lookup["12"]] = effect
+            rrSamples[lookup["23"]] = effect
+            rrSamples[lookup["123"]] = effect
+        elif affects == lookup["3"]:
+            effect = rrs[geneIdx, 2]
+            rrSamples[lookup["3"]] = effect
+            rrSamples[lookup["13"]] = effect
+            rrSamples[lookup["23"]] = effect
+            rrSamples[lookup["123"]] = effect
+        elif affects == lookup["12"]:
+            effect1 = rrs[geneIdx, lookup["1"]]
+            effect2 = rrs[geneIdx, lookup["2"]]
+            effect12 = rrs[geneIdx, lookup["12"]]
+
+            rrSamples[lookup["1"]] = effect1 + effect12
+            rrSamples[lookup["13"]] = effect1 + effect12
+            rrSamples[lookup["2"]] = effect2 + effect12
+            rrSamples[lookup["23"]] = effect2 + effect12
+            rrSamples[lookup["12"]] = effect1 + effect2 + effect12
+            rrSamples[lookup["123"]] = effect1 + effect2 + effect12
+        elif affects == lookup["13"]:
+            effect1 = rrs[geneIdx, lookup["1"]]
+            effect2 = rrs[geneIdx, lookup["3"]]
+            effect12 = rrs[geneIdx, lookup["13"]]
+
+            rrSamples[lookup["1"]] = effect1 + effect12
+            rrSamples[lookup["3"]] = effect2 + effect12
+            rrSamples[lookup["13"]] = effect1 + effect2 + effect12
+            rrSamples[lookup["23"]] = rrSamples[lookup["2"]]
+            rrSamples[lookup["123"]] = rrSamples[lookup["12"]]
+        elif affects == lookup["23"]:
+            effect1 = rrs[geneIdx, lookup["2"]]
+            effect2 = rrs[geneIdx, lookup["3"]]
+            effect12 = rrs[geneIdx, lookup["23"]]
+            rrSamples[lookup["2"]] = effect1 + effect12
+            rrSamples[lookup["3"]] = effect2 + effect12
+            rrSamples[lookup["23"]] = effect1 + effect2 + effect12
+            rrSamples[lookup["13"]] = rrSamples[lookup["2"]]
+            rrSamples[lookup["123"]] = rrSamples[lookup["23"]]
+        # finish
+        elif affects == lookup["123"]:
+            effect1 = rrs[geneIdx, lookup["1"]]
+            effect2 = rrs[geneIdx, lookup["2"]]
+            effect3 = rrs[geneIdx, lookup["3"]]
+            effect12 = rrs[geneIdx, lookup["12"]]
+            effect13 = rrs[geneIdx, lookup["13"]]
+            effect23 = rrs[geneIdx, lookup["23"]]
+            effect123 = rrs[geneIdx, lookup["123"]]
+            rrSamples[lookup["1"]] = effect1 + effect123
+            rrSamples[lookup["2"]] = effect2 + effect123
+            rrSamples[lookup["3"]] = effect3 + effect123
+            rrSamples[lookup["12"]] = effect1 + effect2 + effect123
+            rrSamples[lookup["13"]] = effect1 + effect3 + effect123
+            rrSamples[lookup["23"]] = effect2 + effect3 + effect123
+            rrSamples[lookup["123"]] = effect1 + effect2 + effect3 + effect123
 
         altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
 
@@ -316,16 +385,104 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
+
+# def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrShape = tensor(50.), rrMeans = tensor([3., 3., 3.]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=tensor(20_000), approx=True, rrtype='default', **kwargs):
+#     # TODO: assert shapes match
+#     print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "rrShape", rrShape,
+#           "afMean", afMean, "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs, "rrtype", rrtype)
+
+#     nConditions = len(nCases)
+#     assert(nConditions == 3)
+#     altCounts = []
+#     probs = []
+#     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
+#     rrDist = Gamma(concentration=rrShape, rate=rrShape/rrMeans)
+#     print("rrDist mean", rrDist.sample([10_000, ]).mean(0))
+# #     rrNullDist = Gamma(concentration=rrShape,rate=rrShape.expand(nConditions))
+
+#     # shape == [nGenes, nConditions]
+#     afs = afDist.sample([nGenes, ])
+#     rrs = rrDist.sample([nGenes, ])
+
+#     endIndices = nGenes * diseaseFractions
+#     startIndices = []
+#     for i in range(len(diseaseFractions)):
+#         if i == 0:
+#             startIndices.append(0)
+#             continue
+#         endIndices[i] += endIndices[i-1]
+#         startIndices.append(endIndices[i-1])
+
+#     print("startIndices", startIndices, "endIndices", endIndices)
+
+#     affectedGenes = [[]]
+#     unaffectedGenes = []
+#     rrAll = []
+
+#     totalSamples = int(nCtrls + nCases.sum())
+#     print("totalSamples", totalSamples)
+#     for geneIdx in range(nGenes):
+#         geneAltCounts = []
+#         geneProbs = []
+#         affects = 0
+#         rrSamples = tensor([1., 1., 1.])
+#         # Each gene gets only 1 state: affects condition 1 only, condition 2 only, or both
+#         # currently, in the both case, the increased in counts (rr) is. the same for both conditions
+#         for conditionIdx in range(nConditions):
+#             if geneIdx >= startIndices[conditionIdx] and geneIdx < endIndices[conditionIdx]:
+#                 if conditionIdx == 0:
+#                     affects = 1
+#                 elif conditionIdx == 1:
+#                     affects = 2
+#                 elif conditionIdx == 2:
+#                     affects = 3
+#                 else:
+#                     assert(conditionIdx <= 2)
+
+#                 if len(affectedGenes) <= conditionIdx:
+#                     affectedGenes.append([])
+#                 affectedGenes[conditionIdx].append(geneIdx)
+#                 break
+
+#         assert(affects <= 3)
+#         # gene affects one of 3 states
+#         # based on which state it affects, sampleCase1, samplesCase2, samplesBoth get different rrs for this gene
+#         # controls always get the same value, and that is based on 1 - sum(rrs)
+#         if affects == 0:
+#             unaffectedGenes.append(geneIdx)
+#         elif affects == 1:
+#             #             print(f"affects1: {geneIdx}")
+#             rrSamples[0] = rrs[geneIdx, 0]
+#             rrSamples[2] = rrSamples[0]
+#         elif affects == 2:
+#             #             print(f"affects2: {geneIdx}")
+#             rrSamples[1] = rrs[geneIdx, 1]
+#             rrSamples[2] = rrSamples[1]
+#         elif affects == 3:
+#             # print("affects 3")
+#             #             print(f"affects2: {geneIdx}")
+#             rrSamples[0] = rrs[geneIdx, 0] + rrs[geneIdx, 2]
+#             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
+#             rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
+
+#         altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+
+#         altCounts.append(altCountsGene.numpy())
+#         probs.append(p.numpy())
+#         rrAll.append(rrSamples)
+#     altCounts = tensor(altCounts)
+#     probs = tensor(probs)
+
+#     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
+#     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
 def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrMeans = tensor([3, 3,  3]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
-             covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), approx=True, **kwargs):
-    covSharedStr = ",".join([str(x) for x in covShared.view(-1).numpy()])
-    covSingleStr = ",".join([str(x) for x in covSingle.view(-1).numpy()])
+             covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), approx=True, rrtype='default', **kwargs):
+    # print("old", old)
     # TODO: assert shapes match
-    print("TESTING WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "afMean", afMean,
+    print("TESTING v6normal WITH: nCases", nCases, "nCtrls", nCtrls, "rrMeans", rrMeans, "afMean", afMean,
           "afShape", afShape, "diseaseFractions", diseaseFractions, "pDs", pDs, "covShared", covShared, "covSingle", covSingle)
-    print("\n\ntest tensor", covSharedStr)
     nConditions = len(nCases)
     assert(nConditions == 3)
     altCounts = []
@@ -333,15 +490,62 @@ def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = 
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
 
     r = R(use_pandas=True)
-    r(f'''
-        library(tmvtnorm)
-        sigma <- matrix(c({covSharedStr}), ncol={len(covShared)})
-        rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
-        sigma <- matrix(c({covSingleStr}), ncol={len(covSingle)})
-        rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
-      ''')
-    rrsShared = tensor(r.get('rrsShared'))
-    rrsOne = tensor(r.get('rrsOne'))
+    
+    if rrtype == "unique" or rrtype == "unique-multiplicative" or rrtype=='default':
+        covSharedStr = "c(" + ",".join([str(x) for x in covShared.view(-1).numpy()]) + ")"
+        covSingleStr = "c(" + ",".join([str(x) for x in covSingle.view(-1).numpy()]) + ")"
+        # r = R(use_pandas=True)
+        # r(f'''
+        #     library(tmvtnorm)
+        #     sigma <- matrix(c({covSharedStr}), ncol={len(covShared)})
+        #     rrsShared <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]}), sigma=sigma, lower=c(1,1,1))
+        #     sigma <- matrix(c({covSingleStr}), ncol={len(covSingle)})
+        #     rrsOne <- rtmvnorm(n={nGenes}, mean=c({rrMeans[0]}, {rrMeans[1]}), sigma=sigma, lower=c(1,1))
+        # ''')
+        # rrsShared = tensor(r.get('rrsShared'))
+        # rrsOne = tensor(r.get('rrsOne'))
+
+        print("covSharedStr", covSharedStr)
+        print("covSingleStr", covSingleStr)
+        singleMeans = f"c({rrMeans[0]}, {rrMeans[1]})"
+
+        if rrtype == "unique":
+            sharedMeans = f"c({rrMeans[0]}, {rrMeans[1]}, {rrMeans[0] + rrMeans[1]})"
+        elif rrtype == "unique-multiplicative":
+            print("running unique multiplicative")
+            sharedMeans = f"c({rrMeans[0]}, {rrMeans[1]}, {rrMeans[0] * rrMeans[1]})"
+        else:
+            sharedMeans = f"c({rrMeans[0] + rrMeans[2]}, {rrMeans[1] + rrMeans[2]}, {rrMeans[0] + rrMeans[1] + rrMeans[2]})"
+        
+        print("sharedMeans", sharedMeans)
+        print("singleMeans", singleMeans)
+        print("len covshared", len(covShared))
+        r(f'''
+            library(tmvtnorm)
+            sigma <- matrix({covSharedStr}, ncol={len(covShared)})
+            rrsShared <- rtmvnorm(n={nGenes}, mean={sharedMeans}, sigma=sigma, lower=c(1,1,1))
+            sigma <- matrix({covSingleStr}, ncol={len(covSingle)})
+            rrsOne <- rtmvnorm(n={nGenes}, mean={singleMeans}, sigma=sigma, lower=c(1,1))
+        ''')
+        print("r.get('rrsOne')", r.get('rrsOne'))
+        rrsShared = tensor(r.get('rrsShared'))
+        print("rrsShared", rrsShared)
+        rrsOne = tensor(r.get('rrsOne'))
+        print("rrsOne", rrsOne)
+    elif rrtype == 'lognormal-unique':
+        print("RUNNING NEW")
+        assert len(rrMeans) == 2 and len(covShared) == 2
+        muRR = np.log(rrMeans) #There is no longer a  "shared" contribution
+        rrsOne = tensor(np.random.multivariate_normal(muRR, covSingle, size=nGenes))
+        rrsShared = tensor(np.random.multivariate_normal(muRR, covShared, size=nGenes))
+        rrSum = tensor([rrsShared.sum(1).numpy()])
+        rrsShared = torch.exp(torch.cat([rrsShared, rrSum.T], 1))
+        print(rrsShared)
+    elif rrtype == 'libaility':
+        pass
+    else:
+        raise Exception("not understood")
+        
     print("rrsShared", rrsShared, "means", rrsShared.mean(0))
     print("rrShared correlation 1 & 2", np.corrcoef(rrsShared[:,0], rrsShared[:,1]))
     print("rrShared correlation 1 & 3", np.corrcoef(rrsShared[:,0], rrsShared[:,2]))
@@ -637,11 +841,11 @@ def flattenAltCounts(altCounts, afs):
     return altCountsFlatPooled, afsFlatPooled, flattenedData
 
 
-def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), pDs=None):
+def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), pDs=None, rrtype="default"):
     nGenes = 20_000
 
     if pDs is None:
-        pDs = nCases / (nCases.sum() + nCtrls)
+        pDs = nCases.true_divide(nCases.sum() + nCtrls)
     print("pDs are:", pDs)
     print("covShared is", covShared)
     return [{
@@ -656,6 +860,7 @@ def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3.
         "afMean": afMean,
         "covShared": covShared,
         "covSingle": covSingle,
+        "rrtype": rrtype
     }]
 
 
@@ -685,7 +890,10 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
              nEpochsPerIteration=1,
              runName="run",
              stacked=False,
-             piPrior=False):
+             piPrior=False,
+             old=False,
+             rrtype="default"):
+    print("rrtype", rrtype)
     import os
     from os import path
     from datetime import date
@@ -712,7 +920,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
         for rrsSimRun in rrs:
             for pisSimRun in pis:
                 paramsRun = genParams(rrMeans=rrsSimRun, pis=pisSimRun, afMean=afMean, pDs=pDs,
-                                      rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls, covShared=covShared, covSingle=covSingle)[0]
+                                      rrShape=rrShape, afShape=afShape, nCases=nCases, nCtrls=nCtrls, covShared=covShared, covSingle=covSingle, rrtype=rrtype)[0]
                 processors = []
                 simRes = {"params": paramsRun, "runs": []}
                 
@@ -727,7 +935,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
                 for i in range(nIterations):
                     # def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', mt=False, nEpochs=1, stacked=False):
                     processors.append(p.apply_async(
-                        processor, (i, paramsRun, {"generatingFn": generatingFn, "fitMethod": fitMethod, "mt": False, "nEpochs": nEpochsPerIteration, "stacked": stacked, "piPrior": piPrior}), callback=lambda res: simRes["runs"].append(res)))
+                        processor, (i, paramsRun, {"generatingFn": generatingFn, "fitMethod": fitMethod, "mt": False, "nEpochs": nEpochsPerIteration, "stacked": stacked, "piPrior": piPrior, "old": old}), callback=lambda res: simRes["runs"].append(res)))
                 # Wait for the asynchrounous reader threads to finish
                 
                 [r.get() for r in processors]
@@ -784,7 +992,7 @@ def runSimMT(rrs=tensor([[1.5, 1.5, 1.5]]), pis=tensor([[.05, .05, .05]]),
 
         return results
 
-def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', mt=False, nEpochs=1, stacked=False, piPrior=False):
+def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', mt=False, nEpochs=1, stacked=False, piPrior=False, old=False):
     print("in runSimIteration params are", paramsRun)
     # In DSB:
     # 	No ID	ID
@@ -839,12 +1047,16 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', m
     affectedGenesRun = resPointer["affectedGenes"]
     unaffectedGenesRun = resPointer["unaffectedGenes"]
 
+    nSamples = tensor([ paramsRun["nCtrls"], *paramsRun["nCases"] ])
     runCostFnIdx = 0
     print("fit method is", fitMethod)
+    print("nSamples are", nSamples)
+    print("alt count sum are: genes1: ", xsRun[affectedGenesRun[0]].sum(0), "genes2: ", xsRun[affectedGenesRun[1]].sum(0), "genes3: ", xsRun[affectedGenesRun[2]].sum(0), "unaffectedGenes:", xsRun[unaffectedGenesRun].sum(0))
+    print("alt count means are: genes1: ", xsRun[affectedGenesRun[0]].mean(0) / nSamples, "genes2: ", xsRun[affectedGenesRun[1]].mean(0) / nSamples, "genes3: ", xsRun[affectedGenesRun[2]].mean(0) / nSamples, "unaffectedGenes:", xsRun[unaffectedGenesRun].mean(0) / nSamples)
     start = time.time()
     if mt is True:
         res = fitFnBivariateMT(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20,
-                               debug=True, costFnIdx=runCostFnIdx, method=fitMethod, stacked=stacked, piPrior=piPrior)
+                               debug=True, costFnIdx=runCostFnIdx, method=fitMethod, stacked=stacked, piPrior=piPrior, old=old)
         bestRes = None
         bestLL = None
         for r in res:
@@ -862,7 +1074,7 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', m
             res = fitFnBivariateStacked(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20, debug=True)
         else:
             res = fitFnBivariate(xsRun, pDsRun, nEpochs=nEpochs, minLLThresholdCount=20,
-                                debug=True, method=fitMethod)
+                                debug=True, method=fitMethod,old=old)
         bestRes = res["params"][-1]
     print("took", time.time() - start)
 
@@ -873,7 +1085,7 @@ def runSimIteration(paramsRun, generatingFn=v6normal, fitMethod='Nelder-Mead', m
     c1true, c2true, cBothTrue = empiricalPDGivenV(afsRun, affectedGenesRun, afMeanRun)
 
     # calculate inferred values
-    c1inferred, c2inferred, cBothInferred = inferPDGivenVfromAlphas(inferredAlphas, pDsRun)
+    c1inferred, c2inferred, cBothInferred = inferPDGivenVfromAlphas(inferredAlphas, pDsRun,old=old)
 
     print(f"\n\nrun results for rrs: {rrMeansRun}, pis: {pisRun}")
 
