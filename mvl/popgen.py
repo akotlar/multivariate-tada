@@ -9,9 +9,9 @@ def liabilityFromRisk(PDV, PD, PV):
     # threshold	normsinv(1-prevalence)
     # maf	1.00E-04
     # Penetrance	0.1
-    # Mean effect	treshold - normsinv(1 - penetrance)
+    # Mean effect	threshold - normsinv(1 - penetrance)
     # mu2 	((maf) * Mean effect) / (1-maf)
-    threshold  = norm.icdf(PD)
+    threshold  = norm.icdf(1-PD)
     print(threshold)
     meanEffect = threshold - norm.icdf(one - PDV)
     p = maf

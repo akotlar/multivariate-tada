@@ -1,6 +1,7 @@
 # import pyro
 import copy
 import torch
+from torch import Tensor
 import torch.tensor as tensor
 # import pyro.distributions as dist
 from torch.multiprocessing import Process, Pool, Queue, Manager, cpu_count
@@ -17,7 +18,7 @@ from matplotlib import pyplot
 
 from collections import namedtuple
 
-from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateA0, fitFnBivariateMT, fitFnBivariateStacked, fitFnBivariateStackedDirichlet, inferPDGivenVfromAlphas, empiricalPDGivenV
+from .likelihoods import pVgivenD, pVgivenDapprox, pVgivenNotD, fitFnBivariate, fitFnBivariateA0, fitFnBivariateMT, fitFnBivariateStacked, fitFnBivariateStackedDirichlet, inferPDGivenVfromAlphas, empiricalPDGivenV, pVgivenNotDfromPDV
 from pyper import *
 
 import time
@@ -31,9 +32,9 @@ def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMea
     # P(D2|V) ...
     # P(V|D)
     probVgivenDs = pVgivenDapprox(rrs, afMean)
-   
+    # print("probVgivenDs", probVgivenDs)
     probVgivenNotD = pVgivenNotD(pDs, afMean, probVgivenDs)
-
+    # print("probVgivenNotD", probVgivenNotD)
     # Q1: Is adding P(D|V) (where P(V) is fixed) ok; is adding risks ok.
     #  - log space; lognormal; Correlated topic model (a followup to DirichletMultinomials)
     # P(D|V)P(V)
@@ -42,7 +43,10 @@ def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMea
     # Take logs of risk and add them together
     # unusual to work on the probaiblities directly
     # P(D)*P(V|D) = P(D|V)P(V)
+    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
     p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+    # print("probVgivenDs*pDs", probVgivenDs*pDs)
+    # print("p", p)
     if debug:
         print(f"rrs: {rrs}, afMean: {afMean}, probVgivenNotD: {probVgivenNotD} probVgivenDs: {probVgivenDs} p: {p}")
 
@@ -54,6 +58,44 @@ def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMea
     marginalAlleleCount = int(totalProbability * totalSamples)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(sampleShape), p
+
+# I used to start from P(V) and P(D). I'd calculate P(V|D), multiply that by P(D), sum and subtract from P(V)
+# We can observe that P(D|V)P(V) = P(V|D)P(D)
+# the sum of these P(V|D)P(D) should equal P(V)
+# so P(V) - Sum_P(V|D)P(D) is the P(V|!D)P(!D)
+# therefore the sum of P(D|V)P(V) that should equal P(V)
+# I start from P(D|V)
+# P(D|V)P(V) = P(V|D)P(D)
+def genAlleleCountFromPDVS(totalSamples = tensor(3.3e5), PDVs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
+    # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
+    # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
+    # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
+    # P(D1|V) = P(V)rr1  * P(D1)
+    # P(D2|V) ...
+    # P(V|D)   
+    assert(PDVs.shape[0] == 3)
+    # print("PDVs", PDVs)
+    probVgivenNotD = pVgivenNotDfromPDV(pDs, afMean, PDVs)
+    # print("probVgivenNotD", probVgivenNotD)
+    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
+
+    PDVPV = PDVs * afMean 
+    # Q1: Is adding P(D|V) (where P(V) is fixed) ok; is adding risks ok.
+    #  - log space; lognormal; Correlated topic model (a followup to DirichletMultinomials)
+    # P(D|V)P(V)
+    # Where P(V) is alternate af for mutational class c (PTV)
+    
+    # Take logs of risk and add them together
+    # unusual to work on the probaiblities directly
+    # P(D)*P(V|D) = P(D|V)P(V)
+    p = tensor([probVgivenNotD * (1-pDs.sum()), *PDVPV])
+    # print('p', p)
+    totalProbability = p.sum()
+    
+    assert (abs(totalProbability-afMean) / afMean) <= 1e-6
+    marginalAlleleCount = int(totalProbability * totalSamples)
+
+    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
 
 # Like the 4b case, but multinomial
 # TODO: shoudl we do int() or some rounding function to go from float counts to int counts
@@ -572,8 +614,6 @@ def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = 
     print("totalSamples", totalSamples)
 
     for geneIdx in range(nGenes):
-        geneAltCounts = []
-        geneProbs = []
         affects = 0
         rrSamples = tensor([1., 1., 1.])
         # Each gene gets only 1 state: affects condition 1 only, condition 2 only, or both
@@ -618,6 +658,142 @@ def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
+def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
+    return corrMatrx * torch.prod(variances)
+
+# With rr == 1, P(V|D) == P(V) * rr
+# RR's are calculated from mean effects; the liability shift that is evidenced by 
+# the population prevalence given exposure (which is the mean effect)
+def v6liability(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
+             covShared=tensor([[.1, .04], [.04, .1]]), covSingle=tensor([[.1, 0], [0, .1]]), **kwargs):
+    from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
+    from torch import Tensor
+    import numpy as np
+
+    def sampleNonNegative(mean: Tensor, cov: Tensor):
+        mvn = MVN(mean, cov)
+        samples = mvn.sample()
+
+        for sample in samples:
+            if sample < 0:
+                return sampleNonNegative(mean, cov)
+
+        return samples
+
+    def sampleNnonNeg(N: int, mean: Tensor, cov: Tensor):
+        print("mean", mean)
+        res = []
+        for i in range(N):
+            n = sampleNonNegative(mean, cov)
+            res.append(n.numpy())
+
+        return tensor(res)
+
+    def getTargetMeanEffect(PD: Tensor, rrTarget: Tensor):
+        norm = N(0, 1)
+        pdThresh = norm.icdf(1 - PD)
+        pdTarget = PD * rrTarget
+        print("pdThresh", pdThresh)
+        print("pdTarget", pdTarget)
+        pdvthresh = norm.icdf(1 - pdTarget)
+        print("pdvthresh", pdvthresh)
+        meanEffect = pdThresh - pdvthresh
+        print("meanEffect", meanEffect)
+        return meanEffect
+
+    # Q: do we sample from normal distribution 
+    norm = N(0, 1)
+    pdBoth = pDs[2]
+    pdsOne = pDs[0:2]
+
+    # print("pds", pDs, "pds", pds, "pdsBoth", pdBoth)
+
+    targetMeanEffects = getTargetMeanEffect(pdsOne, rrMeans)
+    testSampleRestricted = sampleNnonNeg(nGenes, targetMeanEffects, covShared)
+    totalRestricted = testSampleRestricted[:, 0] + testSampleRestricted[:, 1]
+
+    pdsThresh = norm.icdf(1 - pdsOne)
+    pdBothThresh = norm.icdf(1 - pdBoth)
+    PDOneGivenBothAffectedThresh = pdsThresh - testSampleRestricted
+    PDBothGivenBothAffectedThresh = pdBothThresh - totalRestricted
+    PDoneGivenV = 1 - norm.cdf(PDOneGivenBothAffectedThresh)
+    PDbothGivenV = 1 - norm.cdf(PDBothGivenBothAffectedThresh)
+
+    singleMeanEffects = sampleNnonNeg(nGenes, targetMeanEffects, covSingle)
+    # nullEffects = sampleNnonNeg(1000, tensor([0., 0.]), covSingle)
+    # print("mean effects means", meanEffects.mean(0))
+    # print("null effects means", nullEffects.mean(0))
+    # print("(meanEffects/nullEffects).mean(0)", (nullEffects).mean(0))
+
+    PDVonlyOneThresh = pdsThresh - singleMeanEffects
+    PDVBothIn1Thresh = pdBothThresh - singleMeanEffects[:, 0]
+    PDVBothIn2Thresh = pdBothThresh - singleMeanEffects[:, 1]
+
+    PDVonlyOne = 1 - norm.cdf(PDVonlyOneThresh)
+    PDBothIn1 = 1 - norm.cdf(PDVBothIn1Thresh)
+    PDBothIn2 = 1 - norm.cdf(PDVBothIn2Thresh)
+
+    d0affected = pDs.expand(nGenes, 3)
+    d1affected = torch.stack([PDVonlyOne[:,0], pdsOne[1].expand(PDVonlyOne.shape[0]), PDBothIn1]).T
+    d2affected = torch.stack([pdsOne[0].expand(PDVonlyOne.shape[0]), PDVonlyOne[:,1], PDBothIn2]).T
+    bothAffected = torch.stack([*PDoneGivenV.T, PDbothGivenV]).T
+    
+    #shape nGenes, kGeneticArchitectureCategories, mSampleCategories
+    PDVs = torch.stack([d0affected, d1affected, d2affected, bothAffected]).transpose(1,0)
+
+    # print("d0affected", d0affected)
+    # print("d1affected", d1affected.mean(0))
+    # print("d2affected", d2affected.mean(0))
+    # print("bothAffected", bothAffected.mean(0))
+    print("PDVs", PDVs, "PDVs.shape", PDVs.shape)
+
+    # creates nGene * len(pDs) tensor
+    # probably a  way of doing this using cat
+    # PDVs = torch.stack([*PDoneGivenV.T,PDbothGivenV]).T
+
+    # shape == [nGenes, nConditions]
+    afDist = Gamma(concentration=afShape, rate=afShape/afMean)
+    afs = afDist.sample([nGenes, ])
+
+    pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
+    categorySampler = Categorical(pis)
+    categories = categorySampler.sample([nGenes,])
+
+    affectedGenes = []
+    for i in range(len(pis)):
+        affectedGenes.append([])
+
+    unaffectedGenes = []
+    altCounts = []
+    probs = []
+    totalSamples = int(nCtrls + nCases.sum())
+
+    for geneIdx in range(nGenes):
+        affects = categories[geneIdx]
+
+        if affects == 0:
+            unaffectedGenes.append(geneIdx)
+        else:
+            affectedGenes[affects - 1].append(geneIdx)
+
+        altCountsGene, p = genAlleleCountFromPDVS(totalSamples = totalSamples, PDVs = PDVs[geneIdx, affects], afMean = afs[geneIdx], pDs = pDs)
+       
+        altCounts.append(altCountsGene.numpy())
+        probs.append(p.numpy())
+
+    altCounts.append(altCountsGene.numpy())
+    probs.append(p.numpy())
+    altCounts = tensor(altCounts)
+    probs = tensor(probs)
+
+    # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
+    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDVs": PDVs}
+
+    # print("pdBothThresh", pdBothThresh)
+    # print("PDBothGivenVthreshold", PDBothGivenVthreshold)
+    # print("totalRestricted", totalRestricted)
+    # print("PDbothGivenV", PDbothGivenV)
+    # norm.cdf(PDBothGivenVthreshold.mean())
 # Like 6, but only 2 groups of genes, those that affect 1only, or 2only. Samples that have both conditions just get rr1 in 1 genes, rr2 in 2 genes
 # so the trick is that we have no 3rd component to infer; our algorithm should place minimal weight on that component
 # if given 3 diseaseFractions, 3rd is ignored
