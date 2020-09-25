@@ -6,7 +6,7 @@ import torch.tensor as tensor
 # import pyro.distributions as dist
 from torch.multiprocessing import Process, Pool, Queue, Manager, cpu_count
 
-from torch.distributions import Binomial, Gamma, Uniform
+from torch.distributions import Binomial, Gamma, Uniform, Categorical
 from pyro.distributions import Multinomial, Dirichlet
 
 import numpy as np
@@ -24,7 +24,10 @@ from pyper import *
 import time
 seed = 0
 
-def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), sampleShape = (), approx = True, debug = False):
+def genAlleleCount(nCtrls, nCases: Tensor, rrs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), pNotD = None, sampleShape = (), approx = True, debug = False):
+    totalSamples = nCtrls + nCases.sum()
+    totalGenes = 2 * totalSamples
+
     # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
     # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
     # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
@@ -44,7 +47,18 @@ def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMea
     # unusual to work on the probaiblities directly
     # P(D)*P(V|D) = P(D|V)P(V)
     # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
-    p = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)])
+    if pNotD is None:
+        pNotD = 1-pDs.sum()
+    
+    totalProbabilityPopulation = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)]).sum()
+    assert (abs(totalProbability-afMean) / afMean) <= 1e-6
+
+    N = nCases.sum() + nCtrls
+
+    PDhat = nCases / (nCases.sum() + nCtrls)
+    PnotDhat = nCtrls / nCases.sum()
+    # but here we need the sample 
+    p = tensor([probVgivenNotD*PnotDhat, *(probVgivenDs*PDhat)])
     # print("probVgivenDs*pDs", probVgivenDs*pDs)
     # print("p", p)
     if debug:
@@ -66,7 +80,7 @@ def genAlleleCount(totalSamples = tensor(3.3e5), rrs = tensor([1.,1.,1.]), afMea
 # therefore the sum of P(D|V)P(V) that should equal P(V)
 # I start from P(D|V)
 # P(D|V)P(V) = P(V|D)P(D)
-def genAlleleCountFromPDVS(totalSamples = tensor(3.3e5), PDVs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
+def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
     # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
     # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
     # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
@@ -74,12 +88,21 @@ def genAlleleCountFromPDVS(totalSamples = tensor(3.3e5), PDVs = tensor([1.,1.,1.
     # P(D2|V) ...
     # P(V|D)   
     assert(PDVs.shape[0] == 3)
-    # print("PDVs", PDVs)
+
+    # One limitation is that we are constrained by the conditions we've included
+    # so to get a true allele count for 
     probVgivenNotD = pVgivenNotDfromPDV(pDs, afMean, PDVs)
+
+    # print("probVgivenNotD", probVgivenNotD)
     # print("probVgivenNotD", probVgivenNotD)
     # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
+    N = nCases.sum() + nCtrls
+    PDhat = nCases / N
+    PnotDhat = nCtrls / N
 
-    PDVPV = PDVs * afMean 
+    PnotDgivenV = probVgivenNotD * PnotDhat / (1 - pDs.sum())
+    PDVPV = PDVs * afMean * PDhat / pDs
+    # print("PDVPV", PDVPV, "PnotD", PnotDgivenV, "probVgivenNotD", probVgivenNotD, "probVgivenNotD * PnotDhat", probVgivenNotD * PnotDhat)
     # Q1: Is adding P(D|V) (where P(V) is fixed) ok; is adding risks ok.
     #  - log space; lognormal; Correlated topic model (a followup to DirichletMultinomials)
     # P(D|V)P(V)
@@ -88,12 +111,17 @@ def genAlleleCountFromPDVS(totalSamples = tensor(3.3e5), PDVs = tensor([1.,1.,1.
     # Take logs of risk and add them together
     # unusual to work on the probaiblities directly
     # P(D)*P(V|D) = P(D|V)P(V)
-    p = tensor([probVgivenNotD * (1-pDs.sum()), *PDVPV])
-    # print('p', p)
-    totalProbability = p.sum()
-    
-    assert (abs(totalProbability-afMean) / afMean) <= 1e-6
-    marginalAlleleCount = int(totalProbability * totalSamples)
+
+    # print("pDs", pDs)
+    # print("tensor([probVgivenNotD*(1-pDs.sum()), *(PDVs*afMean)])", tensor([probVgivenNotD*(1-pDs.sum()), *(PDVs*afMean)]))
+
+    totalProbabilityPopulation = tensor([probVgivenNotD*(1-pDs.sum()), *(PDVs*afMean)]).sum()
+    assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
+
+    p = tensor([PnotDgivenV, *PDVPV])
+    # print("p", p)
+
+    marginalAlleleCount = int(p.sum() * N)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
 
@@ -178,7 +206,7 @@ def v5(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afMean, afShape,
             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
             rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
 
-        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs,approx=approx)
+        altCountsGene, p = genAlleleCount(nCases = nCases, nCtrls = nCtrls, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs,approx=approx)
 
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
@@ -277,7 +305,7 @@ def v6(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor
                 rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
                 rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
 
-        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+        altCountsGene, p = genAlleleCount(nCases = nCases, nCtrls = nCtrls, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
 
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
@@ -417,7 +445,7 @@ def v6_3(nCases, nCtrls, pDs = tensor([.01, .01, .01, .002, .002, .002, .002]), 
             rrSamples[lookup["23"]] = effect2 + effect3 + effect123
             rrSamples[lookup["123"]] = effect1 + effect2 + effect3 + effect123
 
-        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+        altCountsGene, p = genAlleleCount(nCases = nCases, nCtrls = nCtrls, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
 
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
@@ -507,7 +535,7 @@ def v6_3(nCases, nCtrls, pDs = tensor([.01, .01, .01, .002, .002, .002, .002]), 
 #             rrSamples[1] = rrs[geneIdx, 1] + rrs[geneIdx, 2]
 #             rrSamples[2] = rrs[geneIdx, 0] + rrs[geneIdx, 1] + rrs[geneIdx, 2]
 
-#         altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+#         altCountsGene, p = genAlleleCount(nCases = nCases, nCtrls = nCtrls, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
 
 #         altCounts.append(altCountsGene.numpy())
 #         probs.append(p.numpy())
@@ -519,7 +547,7 @@ def v6_3(nCases, nCtrls, pDs = tensor([.01, .01, .01, .002, .002, .002, .002]), 
 #     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
 # Like 6 but generates correlated relative risks by sampling from lognormal
-def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .05]), rrMeans = tensor([3, 3,  3]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
+def v6normal(nCases: Tensor, nCtrls: Tensor, pDs = tensor([.01, .01, .002]), pNotD = None, diseaseFractions = tensor([.05, .05, .05]), rrMeans = tensor([3, 3,  3]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
              covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]), covSingle=tensor([[1, 0], [0, 1]]), approx=True, rrtype='default', **kwargs):
     # print("old", old)
     # TODO: assert shapes match
@@ -595,59 +623,44 @@ def v6normal(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = 
     # shape == [nGenes, nConditions]
     afs = afDist.sample([nGenes, ])
 
-    endIndices = nGenes * diseaseFractions
-    startIndices = []
-    for i in range(len(diseaseFractions)):
-        if i == 0:
-            startIndices.append(0)
-            continue
-        endIndices[i] += endIndices[i-1]
-        startIndices.append(endIndices[i-1])
-
-    print("startIndices", startIndices, "endIndices", endIndices)
-
-    affectedGenes = [[]]
+    affectedGenes = []
     unaffectedGenes = []
     rrAll = []
 
     totalSamples = int(nCtrls + nCases.sum())
     print("totalSamples", totalSamples)
 
+    assert diseaseFractions.sum() <= 1
+    pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
+
+    for i in range(len(pis) - 1):
+        affectedGenes.append([])
+
+    print("pis", pis)
+    regimeSampler = Categorical(pis)
+    geneArchitecture = regimeSampler.sample([nGenes,])
+    print('geneArchitecture', len(torch.nonzero(geneArchitecture == 1)), len(torch.nonzero(geneArchitecture == 2)), len(torch.nonzero(geneArchitecture == 3)), )
     for geneIdx in range(nGenes):
         affects = 0
         rrSamples = tensor([1., 1., 1.])
-        # Each gene gets only 1 state: affects condition 1 only, condition 2 only, or both
-        # currently, in the both case, the increased in counts (rr) is. the same for both conditions
-        for conditionIdx in range(nConditions):
-            if geneIdx >= startIndices[conditionIdx] and geneIdx < endIndices[conditionIdx]:
-                if conditionIdx == 0:
-                    affects = 1
-                elif conditionIdx == 1:
-                    affects = 2
-                elif conditionIdx == 2:
-                    affects = 3
-                else:
-                    assert(conditionIdx <= 2)
+        
+        affects = geneArchitecture[geneIdx]
 
-                if len(affectedGenes) <= conditionIdx:
-                    affectedGenes.append([])
-                affectedGenes[conditionIdx].append(geneIdx)
-                break
-
-        assert(affects <= 3)
         if affects == 0:
             unaffectedGenes.append(geneIdx)
-        elif affects == 1:
-            # TODO: do we need to have 0 correlation between rrSamples[0] and rrSampels[2]
-            rrSamples[0] = rrsOne[geneIdx, 0]
-            rrSamples[2] = rrSamples[0]
-        elif affects == 2:
-            rrSamples[1] = rrsOne[geneIdx, 1]
-            rrSamples[2] = rrSamples[1]
-        elif affects == 3:
-            rrSamples = rrsShared[geneIdx]
+        else:
+            affectedGenes[affects-1].append(geneIdx)
+            if affects == 1:
+                # TODO: do we need to have 0 correlation between rrSamples[0] and rrSampels[2]
+                rrSamples[0] = rrsOne[geneIdx, 0]
+                rrSamples[2] = rrSamples[0]
+            elif affects == 2:
+                rrSamples[1] = rrsOne[geneIdx, 1]
+                rrSamples[2] = rrSamples[1]
+            elif affects == 3:
+                rrSamples = rrsShared[geneIdx]
         
-        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx=approx)
+        altCountsGene, p = genAlleleCount(nCtrls = nCtrls, nCases = nCases, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, pNotD = pNotD, approx=approx)
        
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
@@ -664,6 +677,7 @@ def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
 # With rr == 1, P(V|D) == P(V) * rr
 # RR's are calculated from mean effects; the liability shift that is evidenced by 
 # the population prevalence given exposure (which is the mean effect)
+# pDs here is population prevalence, and afs are population afs
 def v6liability(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
              covShared=tensor([[.1, .04], [.04, .1]]), covSingle=tensor([[.1, 0], [0, .1]]), **kwargs):
     from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
@@ -766,7 +780,6 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions
     unaffectedGenes = []
     altCounts = []
     probs = []
-    totalSamples = int(nCtrls + nCases.sum())
 
     for geneIdx in range(nGenes):
         affects = categories[geneIdx]
@@ -776,7 +789,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01, .002]), diseaseFractions
         else:
             affectedGenes[affects - 1].append(geneIdx)
 
-        altCountsGene, p = genAlleleCountFromPDVS(totalSamples = totalSamples, PDVs = PDVs[geneIdx, affects], afMean = afs[geneIdx], pDs = pDs)
+        altCountsGene, p = genAlleleCountFromPDVS(nCases = nCases, nCtrls = nCtrls, PDVs = PDVs[geneIdx, affects], afMean = afs[geneIdx], pDs = pDs)
        
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
@@ -871,7 +884,7 @@ def v6twoComponents(nCases, nCtrls, pDs, diseaseFractions, rrShape, rrMeans, afM
             rrSamples[1] = rrs[geneIdx, 1]
             rrSamples[2] = rrSamples[1]
 
-        altCountsGene, p = genAlleleCount(totalSamples = totalSamples, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx = approx)
+        altCountsGene, p = genAlleleCount(nCases = nCases, nCtrls = nCtrls, rrs = rrSamples, afMean = afs[geneIdx], pDs = pDs, approx = approx)
 
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())

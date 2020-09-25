@@ -20,6 +20,8 @@ import time
 from pyper import *
 from torch import tensor
 import torch
+from . import optimize
+
 r = R(use_pandas=True)
 
 def skipColIdx(Y, idx):
@@ -109,6 +111,13 @@ def pVgivenDapprox(rr, pV):
     # (rr1*rr2) * pV
     return (rr * pV)
 
+# I can't actually get this...
+# i need everything in my study, oh well
+# I'd need an estimate of P(V|D) for all the missing diseases
+# def pVgivenNotDpop(pNotD, pV, pV)
+#     pDall = 1 - pNotD
+#     PDVall = pV
+
 def pVgivenNotD(pD, pV, pVgivenD):
     p = (pV - (pD*pVgivenD).sum()) / (1 - pD.sum())
     if(p < 0):
@@ -148,7 +157,15 @@ def pDgivenV(pD, pVgivenD, pV):
 
 def rrFromPD(pDgivenV, PD, PV):
     rr = pDgivenV * (1 - PV) / (PD - pDgivenV * PV)
-    return RR
+    return rr
+
+def dirichletMAP(alphas: Tensor, n: Tensor):
+    denom = (alphas + n - 1).sum()
+    return (alphas + n) / denom
+
+def gdmMAP(alphas: Tensor, n: Tensor):
+    denom = (alphas + n - 1).sum()
+    return (alphas + n) / denom
 
 # P(D_sample|V) * population_comorobidity / sample_comorbidity ~= (rr * P(V)) * P(D) / P(V) == rr * P(D)
 # P(D|V) = [ (rr * pV) / (rr * pV + (1 - pV)) ] * P(D) / P(V)
@@ -159,10 +176,13 @@ def rrFromPD(pDgivenV, PD, PV):
 
 # rr1 , rr2 
 def trueVsEst(inferred, input, params, old=False):
+    nCases = params["nCases"]
+    nCtrls = params["nCtrls"]
+    samplePDs = nCases / (nCases.sum() + nCtrls)
     pDgivenVest = inferPDGivenVfromAlphas(
-        tensor(inferred["params"][0][3:]), pds=params["pDs"], old=old)
+        tensor(inferred["params"][0][3:]), samplePDs=samplePDs, old=old)
     pDgivenVestVar = inferPDGivenVfromAlphasVar(
-        tensor(inferred["params"][0][3:]), pds=params["pDs"], old=old)
+        tensor(inferred["params"][0][3:]), samplePDs=samplePDs, old=old)
     truePDGivenV = empiricalPDGivenV(
         input["afs"], affectedGenes=input["affectedGenes"], truePV=params["afMean"])
 
@@ -178,10 +198,13 @@ def trueVsEst(inferred, input, params, old=False):
     return pDgivenVest, pDgivenVestVar, truePDGivenV
 
 def trueVsEstA0(inferred, input, params):
+    nCases = params["nCases"]
+    nCtrls = params["nCtrls"]
+    samplePDs = nCases / (nCases.sum() + nCtrls)
     pDgivenVest = inferPDGivenVfromAlphasA0(
-        tensor(inferred["params"][0][3:]), pds=params["pDs"])
+        tensor(inferred["params"][0][3:]), samplePDs=samplePDs)
     pDgivenVestVar = inferPDGivenVfromAlphasVarA0(
-        tensor(inferred["params"][0][3:]), pds=params["pDs"])
+        tensor(inferred["params"][0][3:]), samplePDs=samplePDs)
     truePDGivenV = empiricalPDGivenV(
         input["afs"], affectedGenes=input["affectedGenes"], truePV=params["afMean"])
 
@@ -196,8 +219,8 @@ def trueVsEstA0(inferred, input, params):
 
     return pDgivenVest, pDgivenVestVar, truePDGivenV
 
-def getDirichlets(alphasTensor, pds):
-    pdsAll = tensor([1-pds.sum(), *pds])
+def getDirichlets(alphasTensor, samplePDs):
+    pdsAll = tensor([1-samplePDs.sum(), *samplePDs])
     alphas = alphasTensor.numpy()
     c1inferred = Dirichlet(tensor(
         [alphas[0], alphas[1], alphas[0], alphas[1]]) * pdsAll)
@@ -207,9 +230,9 @@ def getDirichlets(alphasTensor, pds):
 
     return c1inferred, c2inferred, cBothInferred
 
-def getDirichletsOld(alphasTensor, pds):
+def getDirichletsOld(alphasTensor, samplePDs):
     print("callind OLD")
-    pdsAll = tensor([1-pds.sum(), *pds])
+    pdsAll = tensor([1-samplePDs.sum(), *samplePDs])
     alphas = alphasTensor.numpy()
     c1inferred = Dirichlet(tensor(
         [alphas[0], alphas[1], alphas[0], alphas[1]]) * pdsAll)
@@ -220,8 +243,8 @@ def getDirichletsOld(alphasTensor, pds):
 
     return c1inferred, c2inferred, cBothInferred
 
-def getDirichletsA0(alphasTensor, pds):
-    pdsAll = tensor([1-pds.sum(), *pds])
+def getDirichletsA0(alphasTensor, samplePDs):
+    pdsAll = tensor([1-samplePDs.sum(), *samplePDs])
     alphas = alphasTensor.numpy()
     c1inferred = Dirichlet(tensor(
         [alphas[0], alphas[0] + alphas[1], alphas[0], alphas[0] + alphas[1]]) * pdsAll)
@@ -232,29 +255,29 @@ def getDirichletsA0(alphasTensor, pds):
 
     return c1inferred, c2inferred, cBothInferred
 
-def inferPDGivenVfromAlphas(alphasTensor, pds, old=False):
+def inferPDGivenVfromAlphas(alphasTensor, samplePDs, old=False):
     if old:
-        c1inferred, c2inferred, cBothInferred = getDirichletsOld(alphasTensor, pds)
+        c1inferred, c2inferred, cBothInferred = getDirichletsOld(alphasTensor, samplePDs)
     else:
-        c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, pds)
+        c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, samplePDs)
     print(c1inferred.mean.numpy())
     return [c1inferred.mean.numpy(), c2inferred.mean.numpy(), cBothInferred.mean.numpy()]
 
-def inferPDGivenVfromAlphasA0(alphasTensor, pds):
-    c1inferred, c2inferred, cBothInferred = getDirichletsA0(alphasTensor, pds)
+def inferPDGivenVfromAlphasA0(alphasTensor, samplePDs):
+    c1inferred, c2inferred, cBothInferred = getDirichletsA0(alphasTensor, samplePDs)
     print(c1inferred.mean.numpy())
     return [c1inferred.mean.numpy(), c2inferred.mean.numpy(), cBothInferred.mean.numpy()]
 
 
-def inferPDGivenVfromAlphasVar(alphasTensor, pds, old=False):
+def inferPDGivenVfromAlphasVar(alphasTensor, samplePDs, old=False):
     if old:
-        c1inferred, c2inferred, cBothInferred = getDirichletsOld(alphasTensor, pds)
+        c1inferred, c2inferred, cBothInferred = getDirichletsOld(alphasTensor, samplePDs)
     else:
-        c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, pds)
+        c1inferred, c2inferred, cBothInferred = getDirichlets(alphasTensor, samplePDs)
     return [c1inferred.variance.numpy(), c2inferred.variance.numpy(), cBothInferred.variance.numpy()]
 
-def inferPDGivenVfromAlphasVarA0(alphasTensor, pds):
-    c1inferred, c2inferred, cBothInferred = getDirichletsA0(alphasTensor, pds)
+def inferPDGivenVfromAlphasVarA0(alphasTensor, samplePDs):
+    c1inferred, c2inferred, cBothInferred = getDirichletsA0(alphasTensor, samplePDs)
     return [c1inferred.variance.numpy(), c2inferred.variance.numpy(), cBothInferred.variance.numpy()]
 
 # TODO: generalize to N components
@@ -335,7 +358,7 @@ def effectLLDMD(nHypotheses, pDs, altCountsFlat):
 # TODO: separate individual gene counts
 # and joint gene counts
 # 
-def effectLikelihood(nHypotheses, pDs, altCountsFlat):
+def effectLikelihood(nHypotheses, pDs, altCountsFlat, nCases: Tensor, nCtrls: Tensor):
     nGenes = altCountsFlat.shape[0]
     nConditions = altCountsFlat.shape[1]
     nHypothesesNonNull = nHypotheses - 1
@@ -351,8 +374,12 @@ def effectLikelihood(nHypotheses, pDs, altCountsFlat):
     nShaped = n.expand(nHypothesesNonNull, nGenes).T
     nShapedRepeat = n.expand(nHypothesesNonNull + 1, nGenes).T
 
-    pdsAll = tensor([1 - pDs.sum(), *pDs])
-    print("pdsall", pdsAll)
+    samplePDs = nCases / (nCases.sum() + nCtrls)
+    pdsAll = tensor([1 - samplePDs.sum(), *samplePDs])
+    print("pdsAll", pdsAll)
+    pdsAllPop = tensor([1 - pDs.sum(), *pDs])
+    print("pdsall", pdsAllPop)
+    # pdsAll = pdsAllPop
     pdsAllShaped = pdsAll.expand(nHypothesesNonNull, nConditions)
     pdsAllShapedRepeat = pdsAll.expand(nHypothesesNonNull + 1, nConditions)
 
@@ -454,7 +481,8 @@ def effectLikelihood(nHypotheses, pDs, altCountsFlat):
 
         # 
 
-
+        # print("concentrations", concentrations)
+        # print("altCountsShaped", altCountsShaped)
         # Binom(p1) + Binom(pshared) = Binom(p1 + pshared)
         # Covariance
         # Cov(Y1, Y2) ; where Y1 = X1 + XShared, Y2 = X2 + XShared X1 ~ Binom(p1), X2 ~ Binom(p2), XShared ~ Binom(pshared)
@@ -582,15 +610,15 @@ def effectLikelihood3(nHypotheses, pDs, altCountsFlat):
     # return likelihoodFn, nullLikelihood(pDs, altCountsFlat)
 
 
-def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
+def likelihoodBivariateFast(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, trajectoryPis, trajectoryAlphas, trajectoryLLs):
     print(altCountsFlat.shape)
 
     # TODO: make this flexible for multivariate
     nHypotheses = 4
     nGenes = altCountsFlat.shape[0]
-    print("nGenes")
+  
     likelihoodFn, allNull2, likelihoodFnNoLatent, likelihoodBothModels, likelihoodFn2, likelihoodFnA0, likelihoodFnOld = effectLikelihood(
-        nHypotheses, pDs, altCountsFlat)
+        nHypotheses, pDs, altCountsFlat, nCases, nCtrls)
 
     def jointLikelihood2(params):
         pi1, pi2, alpha0, alpha1, alpha2 = params
@@ -623,10 +651,11 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+            print("returning inf")
             return float("inf")
 
         pi0 = 1.0 - (pi1 + pi2 + piBoth)
-
+        # print("pi0")
         if pi0 < 0:
             return float("inf")
 
@@ -638,6 +667,7 @@ def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas,
         hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
 
         ll = -torch.log(h0 + hs.sum(1)).sum()
+        # print("ll", ll)
         trajectoryLLs.append(ll)
         return ll
 
@@ -808,199 +838,199 @@ def likelihoodDMD(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajector
     }
 
 
-def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
-    print(altCountsFlat.shape)
+# def likelihoodBivariateFast(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
+#     print(altCountsFlat.shape)
 
-    # TODO: make this flexible for multivariate
-    nHypotheses = 4
-    nGenes = altCountsFlat.shape[0]
-    print("nGenes")
-    likelihoodFn, allNull2, likelihoodFnNoLatent, likelihoodBothModels, likelihoodFn2, likelihoodFnA0, likelihoodFnOld = effectLikelihood(
-        nHypotheses, pDs, altCountsFlat)
+#     # TODO: make this flexible for multivariate
+#     nHypotheses = 4
+#     nGenes = altCountsFlat.shape[0]
+#     print("nGenes")
+#     likelihoodFn, allNull2, likelihoodFnNoLatent, likelihoodBothModels, likelihoodFn2, likelihoodFnA0, likelihoodFnOld = effectLikelihood(
+#         nHypotheses, pDs, altCountsFlat)
 
-    def jointLikelihood2(params):
-        pi1, pi2, alpha0, alpha1, alpha2 = params
+#     def jointLikelihood2(params):
+#         pi1, pi2, alpha0, alpha1, alpha2 = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or pi1 < 0 or pi2 < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or pi1 < 0 or pi2 < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2)
+#         pi0 = 1.0 - (pi1 + pi2)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2])
+#         trajectoryPis.append([pi1, pi2])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2])
 
-        hs = tensor([[pi1, pi2]]) * \
-            likelihoodFn2(alpha0, alpha1, alpha2)
+#         hs = tensor([[pi1, pi2]]) * \
+#             likelihoodFn2(alpha0, alpha1, alpha2)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    # I estimate 1 set of genome-wide alphas
-    # but once I have this, I can go back to the per-gene observations
-    # and say given this is the maximized model (pis, alphas), waht is our
-    # expectation for the 
-    def jointLikelihood(params):
-        pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+#     # I estimate 1 set of genome-wide alphas
+#     # but once I have this, I can go back to the per-gene observations
+#     # and say given this is the maximized model (pis, alphas), waht is our
+#     # expectation for the 
+#     def jointLikelihood(params):
+#         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2 + piBoth)
+#         pi0 = 1.0 - (pi1 + pi2 + piBoth)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2, piBoth])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+#         trajectoryPis.append([pi1, pi2, piBoth])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
 
-        hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
+#         hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodOld(params):
-        pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+#     def jointLikelihoodOld(params):
+#         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2 + piBoth)
+#         pi0 = 1.0 - (pi1 + pi2 + piBoth)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2, piBoth])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+#         trajectoryPis.append([pi1, pi2, piBoth])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
 
-        hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFnOld(alpha0, alpha1, alpha2, alphaBoth)
+#         hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFnOld(alpha0, alpha1, alpha2, alphaBoth)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodA0(params):
-        pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+#     def jointLikelihoodA0(params):
+#         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2 + piBoth)
+#         pi0 = 1.0 - (pi1 + pi2 + piBoth)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2, piBoth])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+#         trajectoryPis.append([pi1, pi2, piBoth])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
 
-        hs = tensor([[pi1, pi2, piBoth]]) * \
-            likelihoodFnA0(alpha0, alpha1, alpha2, alphaBoth)
+#         hs = tensor([[pi1, pi2, piBoth]]) * \
+#             likelihoodFnA0(alpha0, alpha1, alpha2, alphaBoth)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodSimple(params):
-        pi1, pi2, piBoth, alpha0, alpha1, alpha2 = params
+#     def jointLikelihoodSimple(params):
+#         pi1, pi2, piBoth, alpha0, alpha1, alpha2 = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2 + piBoth)
+#         pi0 = 1.0 - (pi1 + pi2 + piBoth)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2, piBoth])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2])
+#         trajectoryPis.append([pi1, pi2, piBoth])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2])
 
-        hs = tensor([[pi1, pi2, piBoth]]) * \
-            likelihoodFnNoLatent(alpha0, alpha1, alpha2)
+#         hs = tensor([[pi1, pi2, piBoth]]) * \
+#             likelihoodFnNoLatent(alpha0, alpha1, alpha2)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodBoth(params):
-        pi1, pi2, piBoth, piBothSimple, alpha0, alpha1, alpha2, alphaBoth = params
+#     def jointLikelihoodBoth(params):
+#         pi1, pi2, piBoth, piBothSimple, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0 or piBothSimple < 0:
-            return float("inf")
+#         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0 or piBothSimple < 0:
+#             return float("inf")
 
-        pi0 = 1.0 - (pi1 + pi2 + piBoth + piBothSimple)
+#         pi0 = 1.0 - (pi1 + pi2 + piBoth + piBothSimple)
 
-        if pi0 < 0:
-            return float("inf")
+#         if pi0 < 0:
+#             return float("inf")
 
-        h0 = pi0 * allNull2
+#         h0 = pi0 * allNull2
 
-        trajectoryPis.append([pi1, pi2, piBoth, piBothSimple])
-        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+#         trajectoryPis.append([pi1, pi2, piBoth, piBothSimple])
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
 
-        hs = tensor([[pi1, pi2, piBoth, piBothSimple]]) * \
-            likelihoodBothModels(alpha0, alpha1, alpha2, alphaBoth)
+#         hs = tensor([[pi1, pi2, piBoth, piBothSimple]]) * \
+#             likelihoodBothModels(alpha0, alpha1, alpha2, alphaBoth)
 
-        ll = -torch.log(h0 + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         ll = -torch.log(h0 + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodDirichlet(params):
-        pi0, pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+#     def jointLikelihoodDirichlet(params):
+#         pi0, pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
-        if alpha0 < 1 or alpha1 < 1 or alpha2 < 1 or alphaBoth < 1 or pi0 < 1 or pi1 < 1 or pi2 < 1 or piBoth < 1:
-            return float("inf")
+#         if alpha0 < 1 or alpha1 < 1 or alpha2 < 1 or alphaBoth < 1 or pi0 < 1 or pi1 < 1 or pi2 < 1 or piBoth < 1:
+#             return float("inf")
 
-        raise Exception("BLAH")
+#         raise Exception("BLAH")
 
-        pis = Dirichlet(tensor([pi0, pi1, pi2, piBoth])).mean
-        trajectoryPis.append(pis)
-        trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
-        # print("in joint likelihood")
-        null = pis[0] * allNull2
-        hs = likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
-        # print("hs", hs)
-        ll = -torch.log(null + hs.sum(1)).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         pis = Dirichlet(tensor([pi0, pi1, pi2, piBoth])).mean
+#         trajectoryPis.append(pis)
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+#         # print("in joint likelihood")
+#         null = pis[0] * allNull2
+#         hs = likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
+#         # print("hs", hs)
+#         ll = -torch.log(null + hs.sum(1)).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    def jointLikelihoodSimpleDirichlet(params):
-        pi0, pi1, pi2, piBoth, alpha0, alpha1, alpha2 = params
+#     def jointLikelihoodSimpleDirichlet(params):
+#         pi0, pi1, pi2, piBoth, alpha0, alpha1, alpha2 = params
 
-        if alpha0 < 1 or alpha1 < 1 or alpha2 < 1 or pi0 < 1 or pi1 < 1 or pi2 < 1 or piBoth < 1:
-            return float("inf")
+#         if alpha0 < 1 or alpha1 < 1 or alpha2 < 1 or pi0 < 1 or pi1 < 1 or pi2 < 1 or piBoth < 1:
+#             return float("inf")
         
-        raise Exception("BLAH")
-        pis = Dirichlet(tensor([pi0, pi1, pi2, piBoth])).mean
-        # print('pis', pis)
-        # print(" pis[:, 1:].shape",  pis[:, 1:].shape)
+#         raise Exception("BLAH")
+#         pis = Dirichlet(tensor([pi0, pi1, pi2, piBoth])).mean
+#         # print('pis', pis)
+#         # print(" pis[:, 1:].shape",  pis[:, 1:].shape)
 
-        trajectoryPis.append(pis)
-        trajectoryAlphas.append([alpha0, alpha1, alpha2])
-        r = likelihoodFnNoLatent(alpha0, alpha1, alpha2)
-        # print("likelihood", r, "shape", r.shape)
-        null = pis[0] * allNull2
-        # print("null", null)
-        hs = (pis[1:] * r).sum(1)
-        # print("hs", hs)
-        ll = -torch.log(null + hs).sum()
-        trajectoryLLs.append(ll)
-        return ll
+#         trajectoryPis.append(pis)
+#         trajectoryAlphas.append([alpha0, alpha1, alpha2])
+#         r = likelihoodFnNoLatent(alpha0, alpha1, alpha2)
+#         # print("likelihood", r, "shape", r.shape)
+#         null = pis[0] * allNull2
+#         # print("null", null)
+#         hs = (pis[1:] * r).sum(1)
+#         # print("hs", hs)
+#         ll = -torch.log(null + hs).sum()
+#         trajectoryLLs.append(ll)
+#         return ll
 
-    return jointLikelihood, jointLikelihoodSimple, jointLikelihoodBoth, jointLikelihood2, jointLikelihoodDirichlet, jointLikelihoodSimpleDirichlet, jointLikelihoodA0, jointLikelihoodOld
+#     return jointLikelihood, jointLikelihoodSimple, jointLikelihoodBoth, jointLikelihood2, jointLikelihoodDirichlet, jointLikelihoodSimpleDirichlet, jointLikelihoodA0, jointLikelihoodOld
 
 def likelihood3(altCountsFlat, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs):
     nHypotheses = 7
@@ -1062,8 +1092,8 @@ def processorStackedDirichlet(i, *args, **kwargs):
     return r
 
 
-def fitFnBivariateMT(altCountsFlat, pDs, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, stacked=False, piPrior=False):
-    args = [altCountsFlat, pDs, 1, minLLThresholdCount,
+def fitFnBivariateMT(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs=20, minLLThresholdCount=100, K=4, debug=False, stacked=False, piPrior=False):
+    args = [altCountsFlat, pDs, nCases, nCtrls, 1, minLLThresholdCount,
             K, debug]
 
     results = []
@@ -1212,7 +1242,7 @@ def fitFnBivariateGDM(altCountsByGene, pDs, nEpochs=1, minLLThresholdCount=100, 
 
     return {"lls": lls, "llsAll": llsAll, "params": params, "trajectoryLLs": trajectoryLLs, "trajectoryPi": trajectoryPis, "trajectoryAlphas": trajectoryAlphas}
 
-def fitFnBivariate(altCountsByGene, pDs, nEpochs=1, minLLThresholdCount=100, K=4, debug=False, method="nelder-mead", old=False):
+def fitFnBivariate(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs=1, minLLThresholdCount=100, K=4, debug=False, method="nelder-mead", old=False):
     trajectoryPis = []
     trajectoryAlphas = []
     trajectoryLLs = []
@@ -1220,8 +1250,8 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=1, minLLThresholdCount=100, K=4
     trajectoryAlphasSimple = []
     trajectoryLLsSimple = []
     costFn, costFnSimple, costFnBoth, _, _, _, costFnA0, costFnOld = likelihoodBivariateFast(
-        altCountsByGene, pDs, trajectoryPis, trajectoryAlphas, trajectoryLLs)
-
+        altCountsByGene, pDs, nCases, nCtrls, trajectoryPis, trajectoryAlphas, trajectoryLLs)
+    print('costFn', costFn)
     assert(method == "nelder-mead" or method ==
            "annealing" or method == "basinhopping")
 
@@ -1256,12 +1286,13 @@ def fitFnBivariate(altCountsByGene, pDs, nEpochs=1, minLLThresholdCount=100, K=4
                 pis = Uniform(1/nGenes, 1-pi0).sample([K-1])
                 pis = pis/(pis.sum() + pi0)
                 fnArgs = [*pis.numpy(), *alphasDist.sample([K, ]).numpy()]
-
+                print("fnArgs", fnArgs)
                 ll = costFn(fnArgs)
+                print("ll", ll)
                 if ll < best:
                     best = ll
                     bestParams = fnArgs
-
+            print("bestParams", bestParams)
             if method == "nelder-mead":
                 print("Running single-step optimization")
                 fit = minimizerr(costFn, bestParams, {
