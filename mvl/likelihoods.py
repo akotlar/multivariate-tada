@@ -646,13 +646,42 @@ def likelihoodBivariateFast(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, 
     # I estimate 1 set of genome-wide alphas
     # but once I have this, I can go back to the per-gene observations
     # and say given this is the maximized model (pis, alphas), waht is our
-    # expectation for the 
+    # # expectation for the 
+    # def jointLikelihood(params):
+    #     pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+
+    #     if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+    #         print("returning inf")
+    #         return float("inf")
+
+    #     pi0 = 1.0 - (pi1 + pi2 + piBoth)
+    #     # print("pi0")
+    #     if pi0 < 0:
+    #         return float("inf")
+
+    #     h0 = pi0 * allNull2
+
+    #     trajectoryPis.append([pi1, pi2, piBoth])
+    #     trajectoryAlphas.append([alpha0, alpha1, alpha2, alphaBoth])
+
+    #     hs = tensor([[pi1, pi2, piBoth]]) * likelihoodFn(alpha0, alpha1, alpha2, alphaBoth)
+
+    #     ll = -torch.log(h0 + hs.sum(1)).sum()
+    #     # print("ll", ll)
+    #     trajectoryLLs.append(ll)
+    #     return ll
+    
+    # like above but constrains pseudo-counts
     def jointLikelihood(params):
         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
 
         if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
-            print("returning inf")
             return float("inf")
+        
+        # TODO: Figure out how to reliably prefer smaller pseudocounts
+        # if alpha1 > 1e6 or alpha2 > 1e6 or alphaBoth > 1e6:
+        #     print("returning inf due to alphas", params)
+        #     return float("inf")
 
         pi0 = 1.0 - (pi1 + pi2 + piBoth)
         # print("pi0")
@@ -670,6 +699,35 @@ def likelihoodBivariateFast(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, 
         # print("ll", ll)
         trajectoryLLs.append(ll)
         return ll
+
+    # like the above, but without exploding "params"
+    # def jointLikelihood(params):
+    #     # pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
+
+    #     for param in params:
+    #         if param < 0:
+    #             return float("inf")
+
+    #     # if alpha0 < 0 or alpha1 < 0 or alpha2 < 0 or alphaBoth < 0 or pi1 < 0 or pi2 < 0 or piBoth < 0:
+    #     #     print("returning inf")
+    #     #     return float("inf")
+
+    #     pi0 = 1.0 - sum(params[0:3])
+    #     # print("pi0")
+    #     if pi0 < 0:
+    #         return float("inf")
+
+    #     h0 = pi0 * allNull2
+
+    #     trajectoryPis.append(params[0:3])
+    #     trajectoryAlphas.append(params[3:])
+
+    #     hs = tensor(params[0:3]) * likelihoodFn(*params[3:])
+
+    #     ll = -torch.log(h0 + hs.sum(1)).sum()
+    #     # print("ll", ll)
+    #     trajectoryLLs.append(ll)
+    #     return ll
 
     def jointLikelihoodOld(params):
         pi1, pi2, piBoth, alpha0, alpha1, alpha2, alphaBoth = params
@@ -1267,7 +1325,7 @@ def fitFnBivariate(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs
     # pDgivenV can't be smaller than this assuming allele freq > 1e-6 and rr < 100
     # P(V|D) * P(D) / P(V)
     pi0Dist = Uniform(.5, 1)
-    alphasDist = Uniform(100, 25000)
+    alphasDist = Uniform(1, 250)
     fitSimple = None
 
     if old:
