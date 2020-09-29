@@ -102,7 +102,6 @@ def dgdirmn(Y, alpha, beta):
 # P(D) * P(V), P(D|V) * P(V)
 # P(D|~V)P(~V) = P(~V|D)P(D)
 
-# 
 def pVgivenD(rr, pV):
     return (rr * pV) / (rr * pV + (1 - pV))
 
@@ -125,12 +124,24 @@ def pVgivenNotD(pD, pV, pVgivenD):
             f"pVgivenNotD: invalid params: pD: {pD}, pV: {pV}, pVgivenD: {pVgivenD}, (pD*pVgivenD).sum(): {(pD*pVgivenD).sum()} yield: p = {p}")
     return p
 # P(D|V)P(V) == P(V|D)P(D)
-def pVgivenNotDfromPDV(PD, PV, PDV: Tensor):
-    p = (PV - (PDV*PV).sum()) / (1 - PD.sum())
+def pNotDgivenVpV(PD: Tensor, PV: Tensor, PDV: Tensor):
+    assert 1 - PD.sum() > 0
+    p = PV - (PDV*PV).sum()
     if(p < 0):
         raise ValueError(
             f"pVgivenNotD: invalid params: pD: {PD}, pV: {PV}, PDV: {PDV}, (PV*PDV).sum(): {(PDV*PV).sum()} yield: p = {p}")
     return p
+
+def getAltCountMeans(inData, params):
+    samples = tensor([params["nCtrls"], *params["nCases"]])
+    res = []
+    
+    res.append(inData["altCounts"][inData["unaffectedGenes"]].mean(0) / samples)
+
+    for affectedGenes in inData["affectedGenes"]:
+        res.append(inData["altCounts"][affectedGenes].mean(0) / samples)
+
+    return res
 
 # def dirichletPosterior(alphas, counts):
 

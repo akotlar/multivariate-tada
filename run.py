@@ -50,9 +50,9 @@ if __name__ == "__main__":
     #                 nCases=tensor([10e3, 10e3, 4e3]), nCtrls=tensor(3e5), afMean = 1e-4, nIterations=10, old=False, rrtype="unique", generatingFn=genData.v6normal, runName="old-pds-specified-rr10-af1e-4-unqique")
 
 
-    res = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[3, 7, 2]]), pis=tensor([[.1, .07, .02]]),
-                    pDs=tensor([.01, .01, .002]), 
-                    nCases=tensor([10e3, 10e3, 4e3]), nCtrls=tensor(3e5), afMean = 1e-4, nIterations=10, old=False, rrtype="unique-multiplicative", generatingFn=genData.v6normal, runName="old-pds-specified-rr10-af1e-4-unqique")
+    # res = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrs=tensor([[3, 7, 2]]), pis=tensor([[.1, .07, .02]]),
+    #                 pDs=tensor([.01, .01, .002]), 
+    #                 nCases=tensor([10e3, 10e3, 4e3]), nCtrls=tensor(3e5), afMean = 1e-4, nIterations=10, old=False, rrtype="unique-multiplicative", generatingFn=genData.v6normal, runName="old-pds-specified-rr10-af1e-4-unqique")
 
     # np.save("simulation-res-rr10-5-24-20", res)
 
@@ -264,3 +264,16 @@ if __name__ == "__main__":
     #                 nCases=tensor([4e3, 3.5e3, 1e3]), nCtrls=tensor(5e4), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6,
     #         covShared=tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]]),
     #         covSingle=tensor([[1, 0], [0, 1]]), runName="rrDBS_3k_cases_1kboth_50k_ctrls_pds_01_01_002_af_7_rr8_and_0_shared_rr")
+
+    ########## Liability models #########
+    # liabiilitytest = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrMeans=tensor([[3, 3]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01]),
+    #                 nCases=tensor([1.5e4, 1.5e4, 4e3]), nCtrls=tensor(5e4), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6liability,
+    #         covShared=tensor([[1, .5], [.5, 1]]), meanEffectCovarianceScale=tensor(.01), runName="liability_rr3")
+
+    # liabiilitytest = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrMeans=tensor([[2, 5]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01]),
+    #                 nCases=tensor([1.5e4, 1.5e4, 4e3]), nCtrls=tensor(5e4), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6liability,
+    #         covShared=tensor([[1, .5], [.5, 1]]), meanEffectCovarianceScale=tensor(.01), runName="liability_rr2-5")
+            
+    liabiilitytest = genData.runSimMT(fitMethod="nelder-mead", nEpochs=1, rrMeans=tensor([[10, 10]]), pis=tensor([[.1, .05, .02]]), pDs=tensor([.01, .01]),
+                    nCases=tensor([1.5e4, 1.5e4, 4e3]), nCtrls=tensor(5e4), afMean = 1e-4, rrShape = tensor(50.), nIterations=10, nEpochsPerIteration=1, generatingFn=genData.v6liability,
+            covShared=tensor([[1, .5], [.5, 1]]), meanEffectCovarianceScale=tensor(.01), runName="liability_rr3")
