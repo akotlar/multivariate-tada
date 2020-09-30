@@ -267,6 +267,7 @@ def getDirichletsA0(alphasTensor, samplePDs):
     return c1inferred, c2inferred, cBothInferred
 
 def inferPDGivenVfromAlphas(alphasTensor, samplePDs, old=False):
+    print("alphasTensor", alphasTensor)
     if old:
         c1inferred, c2inferred, cBothInferred = getDirichletsOld(alphasTensor, samplePDs)
     else:

@@ -781,9 +781,9 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("allEffects", allEffects)
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
-    PD1GivenV = pd1Gen.cdf(thresh1)
+    PD1GivenV = pd1Gen.cdf(thresh1) 
     PD2GivenV = pd2Gen.cdf(thresh2)
-    print("PD1GivenV", PD1GivenV.max(), "PD2GivenV", PD2GivenV.max())
+    print("PD1GivenV.mean()", PD1GivenV.mean(), "PD2GivenV.mean()", PD2GivenV.mean())
 
     PDBothGivenV = []
     for i in range(nGenes):
@@ -802,12 +802,12 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("PDBothGivenV / PDBoth", (PDBothGivenV / PDBoth).mean())
     # Oddity in this model: the prevalence of the individual trait is not explicit
     # it's something intermediate to PD1 and PD2
-    pdsCovarOnMean = torch.stack([PD1GivenV, PD2GivenV, PDBothGivenV]).T
+    pdvsInBoth = torch.stack([PD1GivenV / pDs[0], PD2GivenV / pDs[1], PDBothGivenV / PDBoth]).T
 
-    print("pdsCovarOnMean.mean(0)", pdsCovarOnMean.mean(0))
+    print("pdsCovarOnMean.mean(0)", pdvsInBoth.mean(0))
     # This has ~0 covariacne for singel effets, and ~.6 correlation for one of the single effects with a joint effect
-    print("np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,1])\n", np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,1]))
-    print("np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,2])\n", np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,2]))
+    print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,1])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,1]))
+    print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,2])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,2]))
 
     ### Calculate effects in genes that affect a single conditions ###
     indpNormalMeanEffectCov = torch.eye(covShared.shape[0]) * meanEffectCovarianceScale
@@ -815,41 +815,46 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     allEffects = -effectGenerator.sample([nGenes])
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
-    PD1GivenV = pd1Gen.cdf(thresh1)
-    PD2GivenV = pd2Gen.cdf(thresh2)
-    PDBoth1GivenV = pd1Gen.cdf(threshBoth)
-    PDBoth2GivenV = pd2Gen.cdf(threshBoth)
+    PD1GivenVsingleEffect = pd1Gen.cdf(thresh1)
+    PD2GivenVsingleEffect = pd2Gen.cdf(thresh2)
+    PDBoth1GivenV = pd1Gen.cdf(threshBoth) / PDBoth
+    PDBoth2GivenV = pd2Gen.cdf(threshBoth) / PDBoth
 
-    print("PD1GivenV", PD1GivenV.mean(), "PD2GivenV", PD2GivenV.mean())
-    print("PDBoth1GivenV", PDBoth1GivenV.mean())
-    print("PDBoth2GivenV", PDBoth2GivenV.mean())
-    pdvsGeneAffects1 = torch.stack([PD1GivenV, pDs[1].expand([nGenes]), PD1GivenV])
-    pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]), PD2GivenV, PD2GivenV])
+    print("PD1GivenVsingleEffect", PD1GivenVsingleEffect)
+    print("PDBoth1GivenV", PDBoth1GivenV)
+
+    print("PD2GivenVsingleEffect", PD2GivenVsingleEffect)
+    print("PDBoth2GivenV", PDBoth2GivenV)
+
+    pdvsGeneAffects1 = torch.stack([PD1GivenVsingleEffect / pDs[0], pDs[1].expand([nGenes]) / pDs[1], PD1GivenVsingleEffect / pDs[0]])
+    pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]) / pDs[0], PD2GivenVsingleEffect / pDs[1], PD2GivenVsingleEffect / pDs[1]])
+    pdvsNull = (pDsWithBoth  / pDsWithBoth).expand(pdvsGeneAffects1.T.shape).T
+
     print("pdvsGeneAffects1.mean", pdvsGeneAffects1.mean(0))
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
     afs = afDist.sample([nGenes, ])
     print("afs.dist", afs.mean(), "+/-", afs.std())
     print("afs.shape", afs.shape)
-    nullAndEffectGeneArchitectures = torch.stack([pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T, pdvsGeneAffects1, pdvsGeneAffects2, pdsCovarOnMean.T]).transpose(2, 0).transpose(1,2)
-    print("nullAndEffectGeneArchitectures.shape", nullAndEffectGeneArchitectures.shape)
     # We cannot have the P(D1|V) for samples affected by both conditions
     # be larger than P(DBoth|V), and much much larger than rr * P(DBoth). Makes no sense
     # Instead, we want P(V|D), the risk-inflated P(V) seen in cases as a result of the latent genetic architecture
     # P(V|D)P(D) = P(D|V)P(V) ; So P(V|D) = P(D|V)P(V) / P(D)
-    pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(nullAndEffectGeneArchitectures.shape) * nullAndEffectGeneArchitectures / pDsWithBoth #population pDs
-    print(f"pvds: min: {pvds.min(0)}, max: {pvds.max(0)}, mean: {pvds.mean(0)}, std: {pvds.std(0)}")
+    pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2)
+    pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(pvd_base.shape) * pvd_base
     
-    print("afs", afs.mean(), afs.std())
+    print("pvd_base", pvd_base)
+    print("afs", afs)
+    print("pvds", pvds)
+
     pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
     categorySampler = Categorical(pis)
-    categories = categorySampler.sample([nGenes,])
+    categories, _ = torch.sort(categorySampler.sample([nGenes,]))
 
     affectedGenes = []
     unaffectedGenes = []
     altCounts = []
     probs = []
 
-    print("nullAndEffectGeneArchitectures", nullAndEffectGeneArchitectures.mean(0))
     for geneIdx in range(nGenes):
         affects = categories[geneIdx]
 
@@ -868,7 +873,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     probs = tensor(probs)
 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
-    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDVs": nullAndEffectGeneArchitectures, "PDs": pDsWithBoth}
+    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth}
 
     # print("pdBothThresh", pdBothThresh)
     # print("PDBothGivenVthreshold", PDBothGivenVthreshold)
