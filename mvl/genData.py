@@ -809,7 +809,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,1])\n", np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,1]))
     print("np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,2])\n", np.corrcoef(pdsCovarOnMean[:,0], pdsCovarOnMean[:,2]))
 
-    ### Calculate effects in genes that affect both conditions ###
+    ### Calculate effects in genes that affect a single conditions ###
     indpNormalMeanEffectCov = torch.eye(covShared.shape[0]) * meanEffectCovarianceScale
     effectGenerator = MVN(meanEffectsAcrossAllGenes, indpNormalMeanEffectCov)
     allEffects = -effectGenerator.sample([nGenes])
@@ -828,6 +828,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("pdvsGeneAffects1.mean", pdvsGeneAffects1.mean(0))
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
     afs = afDist.sample([nGenes, ])
+    print("afs.dist", afs.mean(), "+/-", afs.std())
     print("afs.shape", afs.shape)
     nullAndEffectGeneArchitectures = torch.stack([pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T, pdvsGeneAffects1, pdvsGeneAffects2, pdsCovarOnMean.T]).transpose(2, 0).transpose(1,2)
     print("nullAndEffectGeneArchitectures.shape", nullAndEffectGeneArchitectures.shape)
