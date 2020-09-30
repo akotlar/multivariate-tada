@@ -1385,7 +1385,7 @@ def fitFnBivariate(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs
     trajectoryPisSimple = []
     trajectoryAlphasSimple = []
     trajectoryLLsSimple = []
-    costFn, costFnSimple, costFnBoth, _, _, _, costFnA0, costFnOld = likelihoodBivariateFast(
+    costFn, _, _, _, _, _, _, costFnOld, _, _ = likelihoodBivariateFast(
         altCountsByGene, pDs, nCases, nCtrls, trajectoryPis, trajectoryAlphas, trajectoryLLs)
     print('costFn', costFn)
     assert(method == "nelder-mead" or method ==
@@ -1494,7 +1494,7 @@ def fitFnBivariateNoCtrls(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, 
     trajectoryPis = []
     trajectoryAlphas = []
     trajectoryLLs = []
-    _, _, _, _, _, _, _, _, costFnNoCtrls = likelihoodBivariateFast(altCountsByGene, pDs, nCases, nCtrls, trajectoryPis, trajectoryAlphas, trajectoryLLs)
+    _, _, _, _, _, _, _, _, costFnNoCtrls, _ = likelihoodBivariateFast(altCountsByGene, pDs, nCases, nCtrls, trajectoryPis, trajectoryAlphas, trajectoryLLs)
     assert(method == "nelder-mead" or method == "annealing" or method == "basinhopping")
 
     llsAll = []
