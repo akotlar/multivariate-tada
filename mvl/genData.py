@@ -34,7 +34,7 @@ def genAlleleCount(nCtrls, nCases: Tensor, rrs = tensor([1.,1.,1.]), afMean = 1e
     # P(D1|V) = P(V)rr1  * P(D1)
     # P(D2|V) ...
     # P(V|D)
-    probVgivenDs = pVgivenD(rrs, afMean)
+    probVgivenDs = pVgivenDapprox(rrs, afMean)
     # print("probVgivenDs", probVgivenDs)
     probVgivenNotD = pVgivenNotD(pDs, afMean, probVgivenDs)
     # print("probVgivenNotD", probVgivenNotD)
@@ -51,11 +51,10 @@ def genAlleleCount(nCtrls, nCases: Tensor, rrs = tensor([1.,1.,1.]), afMean = 1e
         pNotD = 1-pDs.sum()
     
     totalProbabilityPopulation = tensor([probVgivenNotD*(1-pDs.sum()), *(probVgivenDs*pDs)]).sum()
-    # print("totalProbabilityPopulation", totalProbabilityPopulation, "afMean", afMean)
     assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
 
     N = nCases.sum() + nCtrls
-    # print("pDs", pDs)
+
     PDhat = nCases / (nCases.sum() + nCtrls)
     PnotDhat = nCtrls / nCases.sum()
     # but here we need the sample 
@@ -69,7 +68,7 @@ def genAlleleCount(nCtrls, nCases: Tensor, rrs = tensor([1.,1.,1.]), afMean = 1e
     # print("approx", approx)
     # print(totalProbability)
     # print(abs(totalProbability-af) / af)
-    # assert (abs(totalProbability-afMean) / afMean) <= 1e-6
+    assert (abs(totalProbability-afMean) / afMean) <= 1e-6
     marginalAlleleCount = int(totalProbability * totalSamples)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(sampleShape), p
@@ -129,6 +128,35 @@ def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,
 
     p = tensor([PNDVPVsample, *PDVPVsample])
     # print("p", p)
+    marginalAlleleCount = int(p.sum() * N)
+
+    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
+
+def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
+    # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
+    # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
+    # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
+    # P(D1|V) = P(V)rr1  * P(D1)
+    # P(D2|V) ...
+    # P(V|D)   
+    assert(PVDs.shape[0] == 3)
+
+    # One limitation is that we are constrained by the conditions we've included
+    # so to get a true allele count for 
+    PVnotD = pVgivenNotD(pD=pDs, pV=afMean, pVgivenD=PVDs)
+
+    # print("probVgivenNotD", probVgivenNotD)
+    # print("probVgivenNotD", probVgivenNotD)
+    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
+    N = nCases.sum() + nCtrls
+    PnotD = 1 - pDs.sum()
+    PDhat = nCases / N
+    PnotDhat = nCtrls / N
+
+    totalProbabilityPopulation = tensor([PVnotD * PnotD, *(PVDs*pDs)]).sum()
+    assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
+
+    p = tensor([PVnotD * PnotDhat, *(PVDs * PDhat)])
     marginalAlleleCount = int(p.sum() * N)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
@@ -726,8 +754,8 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     # that contribute the correlation?
     print("pDs", pDs)
     n = N(0, 1)
-    thresh1 = n.icdf(1 - pDs[0])
-    thresh2 = n.icdf(1 - pDs[1])
+    thresh1 = n.icdf(pDs[0])
+    thresh2 = n.icdf(pDs[1])
     print("thresh1, thresh2", thresh1, thresh2)
     # Interesting; this PDBoth will shrink if there is more correlation between these traits
     # if correlation is 0, then the cdf appears nearly additive, and if correlation close to 1, 
@@ -738,7 +766,8 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     # PA = PA + (PBorA) - PAB
     # PB = PB + (PBorA) - PAB
     # PAB is a function of correlation....
-    PDBoth = (1 - pdBothGenerator.cdf(tensor([thresh1, thresh2]))) - pDs[0]
+    PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
+    threshBoth = n.icdf(PDBoth)
     pDsWithBoth = tensor([*pDs, PDBoth])
     print("pDsWithBoth", pDsWithBoth)
     print("PDBoth", PDBoth)
@@ -748,12 +777,12 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     meanEffectsAcrossAllGenes = getTargetMeanEffect(pDs, rrMeans)
     print("meanEffectsAcrossAllGenes", meanEffectsAcrossAllGenes)
     effectGenerator = MVN(meanEffectsAcrossAllGenes, covShared * meanEffectCovarianceScale)
-    allEffects = effectGenerator.sample([nGenes])
+    allEffects = -effectGenerator.sample([nGenes])
     print("allEffects", allEffects)
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
-    PD1GivenV = 1 - pd1Gen.cdf(thresh1)
-    PD2GivenV = 1 - pd2Gen.cdf(thresh2)
+    PD1GivenV = pd1Gen.cdf(thresh1)
+    PD2GivenV = pd2Gen.cdf(thresh2)
     print("PD1GivenV", PD1GivenV.max(), "PD2GivenV", PD2GivenV.max())
 
     PDBothGivenV = []
@@ -767,9 +796,10 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
         mvn = MVN(allEffects[i], covShared)
         mvnw = WrappedMVN(mvn)
 
-        PDBothGivenV.append(1 - mvnw.cdf(tensor([thresh1, thresh2])))
+        PDBothGivenV.append(mvnw.cdf(tensor([thresh1, thresh2])))
     PDBothGivenV = tensor(PDBothGivenV)
-    print("PDBothGivenV.max", PDBothGivenV.max())
+    print("PDBothGivenV.mean", PDBothGivenV.mean())
+    print("PDBothGivenV / PDBoth", (PDBothGivenV / PDBoth).mean())
     # Oddity in this model: the prevalence of the individual trait is not explicit
     # it's something intermediate to PD1 and PD2
     pdsCovarOnMean = torch.stack([PD1GivenV, PD2GivenV, PDBothGivenV]).T
@@ -782,19 +812,32 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     ### Calculate effects in genes that affect both conditions ###
     indpNormalMeanEffectCov = torch.eye(covShared.shape[0]) * meanEffectCovarianceScale
     effectGenerator = MVN(meanEffectsAcrossAllGenes, indpNormalMeanEffectCov)
-    allEffects = effectGenerator.sample([nGenes])
+    allEffects = -effectGenerator.sample([nGenes])
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
-    PD1GivenV = 1 - pd1Gen.cdf(thresh1)
-    PD2GivenV = 1 - pd2Gen.cdf(thresh2)
-    print("PD1GivenV", PD1GivenV, "PD2GivenV", PD2GivenV)
+    PD1GivenV = pd1Gen.cdf(thresh1)
+    PD2GivenV = pd2Gen.cdf(thresh2)
+    PDBoth1GivenV = pd1Gen.cdf(threshBoth)
+    PDBoth2GivenV = pd2Gen.cdf(threshBoth)
+
+    print("PD1GivenV", PD1GivenV.mean(), "PD2GivenV", PD2GivenV.mean())
+    print("PDBoth1GivenV", PDBoth1GivenV.mean())
+    print("PDBoth2GivenV", PDBoth2GivenV.mean())
     pdvsGeneAffects1 = torch.stack([PD1GivenV, pDs[1].expand([nGenes]), PD1GivenV])
     pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]), PD2GivenV, PD2GivenV])
-
-    nullAndEffectGeneArchitectures = torch.stack([pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T, pdvsGeneAffects1, pdvsGeneAffects2, pdsCovarOnMean.T]).transpose(2, 0).transpose(1,2)
-
+    print("pdvsGeneAffects1.mean", pdvsGeneAffects1.mean(0))
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
-    afs = afMean.expand(nGenes)#afDist.sample([nGenes, ])
+    afs = afDist.sample([nGenes, ])
+    print("afs.shape", afs.shape)
+    nullAndEffectGeneArchitectures = torch.stack([pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T, pdvsGeneAffects1, pdvsGeneAffects2, pdsCovarOnMean.T]).transpose(2, 0).transpose(1,2)
+    print("nullAndEffectGeneArchitectures.shape", nullAndEffectGeneArchitectures.shape)
+    # We cannot have the P(D1|V) for samples affected by both conditions
+    # be larger than P(DBoth|V), and much much larger than rr * P(DBoth). Makes no sense
+    # Instead, we want P(V|D), the risk-inflated P(V) seen in cases as a result of the latent genetic architecture
+    # P(V|D)P(D) = P(D|V)P(V) ; So P(V|D) = P(D|V)P(V) / P(D)
+    pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(nullAndEffectGeneArchitectures.shape) * nullAndEffectGeneArchitectures / pDsWithBoth #population pDs
+    print(f"pvds: min: {pvds.min(0)}, max: {pvds.max(0)}, mean: {pvds.mean(0)}, std: {pvds.std(0)}")
+    
     print("afs", afs.mean(), afs.std())
     pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
     categorySampler = Categorical(pis)
@@ -804,7 +847,8 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     unaffectedGenes = []
     altCounts = []
     probs = []
-    print("nullAndEffectGeneArchitectures", nullAndEffectGeneArchitectures)
+
+    print("nullAndEffectGeneArchitectures", nullAndEffectGeneArchitectures.mean(0))
     for geneIdx in range(nGenes):
         affects = categories[geneIdx]
 
@@ -814,15 +858,11 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
             while affects - 1 >= len(affectedGenes):
                 affectedGenes.append([])
             affectedGenes[affects - 1].append(geneIdx)
-        # print("affects", affects)
-        # print("nullAndEffectGeneArchitectures[geneIdx, affects]", nullAndEffectGeneArchitectures[geneIdx, affects])
-        altCountsGene, p = genAlleleCountFromPDVS(nCases = nCases, nCtrls = nCtrls, PDVs = nullAndEffectGeneArchitectures[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
+        altCountsGene, p = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
        
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
 
-    altCounts.append(altCountsGene.numpy())
-    probs.append(p.numpy())
     altCounts = tensor(altCounts)
     probs = tensor(probs)
 
