@@ -731,11 +731,13 @@ def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
 
 # TODO: should probably sample PD's, so as not to have 0 variability for null genes
 def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
-             meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1, .5], [.5, 1]]), **kwargs):
+             meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1, .5], [.5, 1]]), covSingle = tensor([ [1, .2], [.2, 1]]), **kwargs):
     from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
     from torch import Tensor
     import numpy as np
     from mvl.mvn import WrappedMVN
+
+    residualCovariance = covSingle
 
     def getTargetMeanEffect(PD: Tensor, rrTarget: Tensor):
         norm = N(0, 1)
@@ -761,7 +763,8 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     # if correlation is 0, then the cdf appears nearly additive, and if correlation close to 1, 
     # the cdf appears nearly that of the larger of the two thresholds
     print("covShared", covShared)
-    pdBothGenerator = WrappedMVN(MVN(tensor([0, 0]), covShared))
+    print("residualCovariance", residualCovariance)
+    pdBothGenerator = WrappedMVN(MVN(tensor([0, 0]), residualCovariance))
     # TODO: How to get this to be related to PDBoth|V, but smaller than either
     # PA = PA + (PBorA) - PAB
     # PB = PB + (PBorA) - PAB
@@ -784,7 +787,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     PD1GivenV = pd1Gen.cdf(thresh1) 
     PD2GivenV = pd2Gen.cdf(thresh2)
     print("PD1GivenV.mean()", PD1GivenV.mean(), "PD2GivenV.mean()", PD2GivenV.mean())
-
+    print("allEffects[i]", allEffects[0])
     PDBothGivenV = []
     for i in range(nGenes):
         # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
@@ -802,7 +805,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("PDBothGivenV / PDBoth", (PDBothGivenV / PDBoth).mean())
     # Oddity in this model: the prevalence of the individual trait is not explicit
     # it's something intermediate to PD1 and PD2
-    pdvsInBoth = torch.stack([PD1GivenV / pDs[0], PD2GivenV / pDs[1], PDBothGivenV / PDBoth]).T
+    pdvsInBoth = torch.stack([PD1GivenV, PD2GivenV, PDBothGivenV]).T
 
     print("pdsCovarOnMean.mean(0)", pdvsInBoth.mean(0))
     # This has ~0 covariacne for singel effets, and ~.6 correlation for one of the single effects with a joint effect
@@ -810,25 +813,40 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,2])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,2]))
 
     ### Calculate effects in genes that affect a single conditions ###
-    indpNormalMeanEffectCov = torch.eye(covShared.shape[0]) * meanEffectCovarianceScale
+    indpNormalMeanEffectCov = residualCovariance * meanEffectCovarianceScale
     effectGenerator = MVN(meanEffectsAcrossAllGenes, indpNormalMeanEffectCov)
     allEffects = -effectGenerator.sample([nGenes])
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
-    PD1GivenVsingleEffect = pd1Gen.cdf(thresh1)
-    PD2GivenVsingleEffect = pd2Gen.cdf(thresh2)
-    PDBoth1GivenV = pd1Gen.cdf(threshBoth) / PDBoth
-    PDBoth2GivenV = pd2Gen.cdf(threshBoth) / PDBoth
+    PD1Vsingle = pd1Gen.cdf(thresh1)
+    PD2Vsingle = pd2Gen.cdf(thresh2)
 
-    print("PD1GivenVsingleEffect", PD1GivenVsingleEffect)
+    PDBoth1GivenV =  []
+    PDBoth2GivenV = []
+    for i in range(nGenes):
+        # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
+        # scipy requires ndim == 1 on means
+        # print(allEffects[i])
+
+        # this covariance is not necessarily the same
+        # 0 and the effect size correlation are 2 possible options
+        pdBoth1gen = WrappedMVN(MVN(tensor([allEffects[i, 0], 0]), residualCovariance))
+        PDBoth1GivenV.append(pdBoth1gen.cdf(tensor([thresh1, thresh2])))
+
+        pdBoth2gen = WrappedMVN(MVN(tensor([0, allEffects[i, 1]]), residualCovariance))
+        PDBoth2GivenV.append(pdBoth2gen.cdf(tensor([thresh1, thresh2])))
+
+    PDBoth1GivenV = tensor(PDBoth1GivenV)
+    PDBoth2GivenV = tensor(PDBoth2GivenV)
+    # print("PD1GivenVsingleEffect", PD1Vsingle)
     print("PDBoth1GivenV", PDBoth1GivenV)
 
-    print("PD2GivenVsingleEffect", PD2GivenVsingleEffect)
+    # print("PD2GivenVsingleEffect", PD2Vsingle)
     print("PDBoth2GivenV", PDBoth2GivenV)
 
-    pdvsGeneAffects1 = torch.stack([PD1GivenVsingleEffect / pDs[0], pDs[1].expand([nGenes]) / pDs[1], PD1GivenVsingleEffect / pDs[0]])
-    pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]) / pDs[0], PD2GivenVsingleEffect / pDs[1], PD2GivenVsingleEffect / pDs[1]])
-    pdvsNull = (pDsWithBoth  / pDsWithBoth).expand(pdvsGeneAffects1.T.shape).T
+    pdvsGeneAffects1 = torch.stack([PD1Vsingle, pDs[1].expand([nGenes]), PDBoth1GivenV])
+    pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]), PD2Vsingle, PDBoth2GivenV])
+    pdvsNull = pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T
 
     print("pdvsGeneAffects1.mean", pdvsGeneAffects1.mean(0))
     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
@@ -839,7 +857,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     # be larger than P(DBoth|V), and much much larger than rr * P(DBoth). Makes no sense
     # Instead, we want P(V|D), the risk-inflated P(V) seen in cases as a result of the latent genetic architecture
     # P(V|D)P(D) = P(D|V)P(V) ; So P(V|D) = P(D|V)P(V) / P(D)
-    pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2)
+    pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2) / pDsWithBoth
     pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(pvd_base.shape) * pvd_base
     
     print("pvd_base", pvd_base)

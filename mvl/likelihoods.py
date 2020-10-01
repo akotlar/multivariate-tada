@@ -1382,9 +1382,6 @@ def fitFnBivariate(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs
     trajectoryPis = []
     trajectoryAlphas = []
     trajectoryLLs = []
-    trajectoryPisSimple = []
-    trajectoryAlphasSimple = []
-    trajectoryLLsSimple = []
     costFn, _, _, _, _, _, _, costFnOld, _, _ = likelihoodBivariateFast(
         altCountsByGene, pDs, nCases, nCtrls, trajectoryPis, trajectoryAlphas, trajectoryLLs)
     print('costFn', costFn)
@@ -1404,7 +1401,6 @@ def fitFnBivariate(altCountsByGene, pDs, nCases: Tensor, nCtrls: Tensor, nEpochs
     # P(V|D) * P(D) / P(V)
     pi0Dist = Uniform(.5, 1)
     alphasDist = Uniform(1, 250)
-    fitSimple = None
 
     if old:
         costFn = costFnOld
