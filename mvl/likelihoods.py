@@ -22,7 +22,37 @@ from torch import tensor
 import torch
 from . import optimize
 
+import tensorflow as tf
+import tensorflow_probability as tfp
+TDM = tfp.distributions.DirichletMultinomial
+
 r = R(use_pandas=True)
+
+# bgmm = tfd.JointDistributionNamed(dict(
+#   mix_probs=tfd.Dirichlet(
+#     concentration=np.ones(components, dtype) / 10.),
+#   loc=tfd.Independent(
+#     tfd.Normal(
+#         loc=np.stack([
+#             -np.ones(dims, dtype),
+#             np.zeros(dims, dtype),
+#             np.ones(dims, dtype),
+#         ]),
+#         scale=tf.ones([components, dims], dtype)),
+#     reinterpreted_batch_ndims=2),
+#   precision=tfd.Independent(
+#     tfd.WishartTriL(
+#         df=5,
+#         scale_tril=np.stack([np.eye(dims, dtype=dtype)]*components),
+#         input_output_cholesky=True),
+#     reinterpreted_batch_ndims=1),
+#   s=lambda mix_probs, loc, precision: tfd.Sample(tfd.MixtureSameFamily(
+#       mixture_distribution=tfd.Categorical(probs=mix_probs),
+#       components_distribution=MVNCholPrecisionTriL(
+#           loc=loc,
+#           chol_precision_tril=precision)),
+#       sample_shape=num_samples)
+# ))
 
 def skipColIdx(Y, idx):
     return torch.cat([Y[:,:~idx], Y[:,~idx:]], 1)
@@ -140,6 +170,18 @@ def getAltCountMeans(inData, params):
 
     for affectedGenes in inData["affectedGenes"]:
         res.append(inData["altCounts"][affectedGenes].mean(0) / samples)
+
+    return res
+
+
+def getAltCountStd(inData, params):
+    samples = tensor([params["nCtrls"], *params["nCases"]])
+    res = []
+
+    res.append(inData["altCounts"][inData["unaffectedGenes"]].std(0) / samples)
+
+    for affectedGenes in inData["affectedGenes"]:
+        res.append(inData["altCounts"][affectedGenes].std(0) / samples)
 
     return res
 
@@ -395,6 +437,8 @@ def effectLikelihood(nHypotheses, pDs, altCountsFlat, nCases: Tensor, nCtrls: Te
     pdsAllShaped = pdsAll.expand(nHypothesesNonNull, nConditions)
     pdsAllShapedRepeat = pdsAll.expand(nHypothesesNonNull + 1, nConditions)
 
+    tfpdsAllShaped = tf.convert_to_tensor(pdsAllShaped)
+    print("tfpdsAllShaped", tfpdsAllShaped)
     # if we were to have more models, we would have something like k-(k-1)! more models, or k-1more models
     # [alpha0, alpha0, alpha0, alpha3, alpha3], #H3
     # covariance
@@ -429,7 +473,9 @@ def effectLikelihood(nHypotheses, pDs, altCountsFlat, nCases: Tensor, nCtrls: Te
             #ctrls, cases1, cases2, casesBoth
             # keep reuse; to reflec the fact that we're not truly multinomial
             # these are really independent binomials
-
+            
+            # P(V|D)
+            # P(D|V)
             [alpha0, alpha1, alpha0, alpha1],  # H1 alpha1/(alpha0 + alpha1 + alpha2 + alpha1)
             [alpha0, alpha0, alpha2, alpha2],  # H2
             # alpha_sum = a0 + a1 + aBoth + a2 + aBoth + a1 + a2 + aBoth
@@ -656,11 +702,13 @@ def likelihoodBivariateFast(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, 
 
     # TODO: make this flexible for multivariate
     nHypotheses = 4
-    nGenes = altCountsFlat.shape[0]
+    # nGenes = altCountsFlat.shape[0]
 
     likelihoodFn, allNull2, likelihoodFnNoLatent, likelihoodBothModels, likelihoodFn2, likelihoodFnA0, likelihoodFnOld, allNullNoCtrls, likelihoodFnNoCtrls, likelihoodFnCtrlsSepAlpha = effectLikelihood(
         nHypotheses, pDs, altCountsFlat, nCases, nCtrls)
-
+    
+    maxAlpha = nCases.max() * 2 * .1
+    # print("maxAlpha", maxAlpha)
     def jointLikelihood2(params):
         pi1, pi2, alpha0, alpha1, alpha2 = params
 
@@ -692,8 +740,8 @@ def likelihoodBivariateFast(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, 
             return float("inf")
 
         # TODO: Figure out how to reliably prefer smaller pseudocounts
-        # if alpha1 > 1e6 or alpha2 > 1e6 or alphaBoth > 1e6:
-        #     print("returning inf due to alphas", params)
+        # if alpha1 > maxAlpha or alpha2 > maxAlpha or alphaBoth > maxAlpha:
+        #     print("returning inf due to alphas", params, maxAlpha)
         #     return float("inf")
 
         pi0 = 1.0 - (pi1 + pi2 + piBoth)
@@ -934,9 +982,9 @@ def likelihoodMultivariate(altCountsFlat, pDs, nCases: Tensor, nCtrls: Tensor, t
             return float("inf")
 
         # TODO: Figure out how to reliably prefer smaller pseudocounts
-        # if alpha1 > 1e6 or alpha2 > 1e6 or alphaBoth > 1e6:
-        #     print("returning inf due to alphas", params)
-        #     return float("inf")
+        if alpha1 > 5e2 or alpha2 > 5e2 or alphaBoth > 5e2:
+            print("returning inf due to alphas", params)
+            return float("inf")
 
         pi0 = 1.0 - (pi1 + pi2 + piBoth)
         # print("pi0")

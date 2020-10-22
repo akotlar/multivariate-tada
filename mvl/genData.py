@@ -730,6 +730,20 @@ def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
 # genetic correlation and the prevalence of the individual traits
 
 # TODO: should probably sample PD's, so as not to have 0 variability for null genes
+
+# Simulation issues
+# if covSingle is [1 , 0], [0, 1] and covShared = [1, .5], [.5, 1]
+# with rr1 = rr2 = 20
+# rrBoth will be ~900. Completely ridiculous
+# I think PDBoth needs to be calculated using the same covShared
+# Also, in this case, the effect Both in single-effect genes can be markedly different from
+# the effect in single-diseases
+# I think this model is pretty wrong; I think we do 
+# need to scale by pD, because residual covariance is not taken into account in generating
+# pd1givenv in single, pd2givenv in single
+# nor in thresh1 or thresh2
+# To get this right, PD1 and PD2 would need to be sampled from a MVN with
+# some mean (maybe PD1 and PD2) and some residual covariance
 def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
              meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1, .5], [.5, 1]]), covSingle = tensor([ [1, .2], [.2, 1]]), **kwargs):
     from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
@@ -738,6 +752,9 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     from mvl.mvn import WrappedMVN
 
     residualCovariance = covSingle
+
+    print("covShared", covShared)
+    print("residualCovariance", residualCovariance)
 
     def getTargetMeanEffect(PD: Tensor, rrTarget: Tensor):
         norm = N(0, 1)
@@ -754,40 +771,40 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     ### Calculate P(DBoth) given genetic correlation ###
     # TODO: this may not be quite right, I think we would need to weigh the correlation by the proportion of genes
     # that contribute the correlation?
-    print("pDs", pDs)
     n = N(0, 1)
     thresh1 = n.icdf(pDs[0])
     thresh2 = n.icdf(pDs[1])
-    print("thresh1, thresh2", thresh1, thresh2)
+
+    print("PD1 threshold, PD2 threshold", thresh1, thresh2)
     # Interesting; this PDBoth will shrink if there is more correlation between these traits
     # if correlation is 0, then the cdf appears nearly additive, and if correlation close to 1, 
     # the cdf appears nearly that of the larger of the two thresholds
-    print("covShared", covShared)
-    print("residualCovariance", residualCovariance)
-    pdBothGenerator = WrappedMVN(MVN(tensor([0, 0]), residualCovariance))
-    # TODO: How to get this to be related to PDBoth|V, but smaller than either
-    # PA = PA + (PBorA) - PAB
-    # PB = PB + (PBorA) - PAB
-    # PAB is a function of correlation....
+    
+    # TODO: I think this must be covShared, where covShared is genetic correlation + environmental
+    # otherwise I can get cases where P(V|DBoth,geneBoth) is much smaller than P(V|D1, geneBoth) and P(V|D2, geneBoth), given the exact
+    # same covariance
+    pdBothGenerator = WrappedMVN(MVN(tensor([0, 0]), covShared))
     PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
-    threshBoth = n.icdf(PDBoth)
     pDsWithBoth = tensor([*pDs, PDBoth])
+
     print("pDsWithBoth", pDsWithBoth)
-    print("PDBoth", PDBoth)
     
     ### Calculate effects in genes that affect both conditions ###
     # No matter how I scale the covariance matrix, correlation will remain the same, great!
     meanEffectsAcrossAllGenes = getTargetMeanEffect(pDs, rrMeans)
     print("meanEffectsAcrossAllGenes", meanEffectsAcrossAllGenes)
+
     effectGenerator = MVN(meanEffectsAcrossAllGenes, covShared * meanEffectCovarianceScale)
     allEffects = -effectGenerator.sample([nGenes])
     print("allEffects", allEffects)
+
     pd1Gen = N(allEffects[:, 0], 1)
     pd2Gen = N(allEffects[:, 1], 1)
     PD1GivenV = pd1Gen.cdf(thresh1) 
     PD2GivenV = pd2Gen.cdf(thresh2)
     print("PD1GivenV.mean()", PD1GivenV.mean(), "PD2GivenV.mean()", PD2GivenV.mean())
     print("allEffects[i]", allEffects[0])
+
     PDBothGivenV = []
     for i in range(nGenes):
         # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
@@ -814,35 +831,64 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
 
     ### Calculate effects in genes that affect a single conditions ###
     indpNormalMeanEffectCov = residualCovariance * meanEffectCovarianceScale
-    effectGenerator = MVN(meanEffectsAcrossAllGenes, indpNormalMeanEffectCov)
-    allEffects = -effectGenerator.sample([nGenes])
-    pd1Gen = N(allEffects[:, 0], 1)
-    pd2Gen = N(allEffects[:, 1], 1)
+    effectGenerator= MVN(meanEffectsAcrossAllGenes, indpNormalMeanEffectCov)
+    allEffectsFor12 = -effectGenerator.sample([nGenes])
+    pd1Gen = N(allEffectsFor12[:, 0], 1)
+    pd2Gen = N(allEffectsFor12[:, 1], 1)
     PD1Vsingle = pd1Gen.cdf(thresh1)
     PD2Vsingle = pd2Gen.cdf(thresh2)
 
-    PDBoth1GivenV =  []
-    PDBoth2GivenV = []
-    for i in range(nGenes):
-        # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
-        # scipy requires ndim == 1 on means
-        # print(allEffects[i])
+    # Add some sampling variability, effectively rr variability
+    # for rr's observed by cases both
+    allEffectsForBoth = -effectGenerator.sample([nGenes])
+    pd1GenForBoth = N(allEffectsForBoth[:, 0], 1)
+    pd2GenForBoth = N(allEffectsForBoth[:, 1], 1)
+    PDBoth1GivenV = PD1Vsingle * pDsWithBoth[2] / pDsWithBoth[0] #pd1GenForBoth.cdf(thresh1) * pDsWithBoth[2] / pDsWithBoth[0]
+    PDBoth2GivenV = PD2Vsingle * pDsWithBoth[2] / pDsWithBoth[1] #pd2GenForBoth.cdf(thresh2) * pDsWithBoth[2] / pDsWithBoth[1]
+    
+    # pvds tensor([[[1.0452e-04, 1.0452e-04, 1.0452e-04],
+    #      [2.0762e-03, 1.0452e-04, 1.0611e-04],
+    #      [1.0452e-04, 2.0763e-03, 1.0611e-04],
+    #      [1.9779e-03, 2.0920e-03, 8.8902e-04]],
 
-        # this covariance is not necessarily the same
-        # 0 and the effect size correlation are 2 possible options
-        pdBoth1gen = WrappedMVN(MVN(tensor([allEffects[i, 0], 0]), residualCovariance))
-        PDBoth1GivenV.append(pdBoth1gen.cdf(tensor([thresh1, thresh2])))
+    # This is also wrong; P(V|D, gene1, casesboth) seem interpolated between P(V|D, gene1, cases1) and some functino of thresh2
+    # PDBoth1GivenV =  []
+    # PDBoth2GivenV = []
+    # for i in range(nGenes):
+    #     pdBoth1gen = WrappedMVN(MVN(tensor([allEffects[i, 0], 0]), torch.eye(2)))
+    #     PDBoth1GivenV.append(pdBoth1gen.cdf(tensor([thresh1, thresh2])))
 
-        pdBoth2gen = WrappedMVN(MVN(tensor([0, allEffects[i, 1]]), residualCovariance))
-        PDBoth2GivenV.append(pdBoth2gen.cdf(tensor([thresh1, thresh2])))
+    #     pdBoth2gen = WrappedMVN(MVN(tensor([0, allEffects[i, 1]]), torch.eye(2)))
+    #     PDBoth2GivenV.append(pdBoth2gen.cdf(tensor([thresh1, thresh2])))
+    # PDBoth1GivenV = tensor(PDBoth1GivenV)
+    # PDBoth2GivenV = tensor(PDBoth2GivenV)
 
-    PDBoth1GivenV = tensor(PDBoth1GivenV)
-    PDBoth2GivenV = tensor(PDBoth2GivenV)
+    # I don't think this is right
+    # With: covShared=tensor([ [1., .5], [.5, 1] ]), covSingle=tensor([ [1., .999], [.9999, 1] ]
+    # pvds tensor([[[1.0452e-04, 1.0452e-04, 1.0452e-04],
+        #  [2.0762e-03, 1.0452e-04, 1.0611e-04],
+        #  [1.0452e-04, 2.0763e-03, 1.0611e-04],
+        #  [1.9779e-03, 2.0920e-03, 8.8902e-04]],
+    # PDBoth1GivenV =  []
+    # PDBoth2GivenV = []
+    # for i in range(nGenes):
+    #     pdBoth1gen = WrappedMVN(MVN(tensor([allEffects[i, 0], 0]), residualCovariance))
+    #     PDBoth1GivenV.append(pdBoth1gen.cdf(tensor([thresh1, thresh2])))
+
+    #     pdBoth2gen = WrappedMVN(MVN(tensor([0, allEffects[i, 1]]), residualCovariance))
+    #     PDBoth2GivenV.append(pdBoth2gen.cdf(tensor([thresh1, thresh2])))
+    # PDBoth1GivenV = tensor(PDBoth1GivenV)
+    # PDBoth2GivenV = tensor(PDBoth2GivenV)
     # print("PD1GivenVsingleEffect", PD1Vsingle)
     print("PDBoth1GivenV", PDBoth1GivenV)
 
     # print("PD2GivenVsingleEffect", PD2Vsingle)
     print("PDBoth2GivenV", PDBoth2GivenV)
+
+    print("np.corrcoef(PD1Vsingle, PD2Vsingle)\n", np.corrcoef(PD1Vsingle, PD2Vsingle))
+    print("np.corrcoef(PD1Vsingle, PDBoth1GivenV)\n", np.corrcoef(PD1Vsingle, PDBoth1GivenV))
+    print("np.corrcoef(PD2Vsingle, PDBoth1GivenV)\n", np.corrcoef(PD2Vsingle, PDBoth1GivenV))
+    print("np.corrcoef(PD2Vsingle, PDBoth2GivenV)\n", np.corrcoef(PD2Vsingle, PDBoth2GivenV))
 
     pdvsGeneAffects1 = torch.stack([PD1Vsingle, pDs[1].expand([nGenes]), PDBoth1GivenV])
     pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]), PD2Vsingle, PDBoth2GivenV])
@@ -866,7 +912,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
 
     pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
     categorySampler = Categorical(pis)
-    categories, _ = torch.sort(categorySampler.sample([nGenes,]))
+    categories  = categorySampler.sample([nGenes,])
 
     affectedGenes = []
     unaffectedGenes = []
