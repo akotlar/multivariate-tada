@@ -127,7 +127,7 @@ def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,
     assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
 
     p = tensor([PNDVPVsample, *PDVPVsample])
-    # print("p", p)
+    assert p.sum() < 1
     marginalAlleleCount = int(p.sum() * N)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
@@ -158,6 +158,7 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
 
     p = tensor([PVnotD * PnotDhat, *(PVDs * PDhat)])
     marginalAlleleCount = int(p.sum() * N)
+    print("p.sum", p.sum())
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
 
