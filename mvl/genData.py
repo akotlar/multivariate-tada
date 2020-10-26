@@ -158,7 +158,7 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
 
     p = tensor([PVnotD * PnotDhat, *(PVDs * PDhat)])
     marginalAlleleCount = int(p.sum() * N)
-    print("p.sum", p.sum())
+    # print("p.sum", p.sum())
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
 
