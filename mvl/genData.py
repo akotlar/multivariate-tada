@@ -103,11 +103,12 @@ def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,
     # print("pDs", pDs)
     # This is also P(V|D)P(D)
     PVD = PDVs * afMean / pDs
+    print("PV|D", PVD)
     PDVPVsample = PVD * PDhat
     # print("afMean", afMean)
     # print("pDs", pDs)
-    # print("PDhat", PDhat)
-    # print("PDVPVsample", PDVPVsample)
+    print("PDhat", PDhat)
+    print("PDVPVsample", PDVPVsample)
     PNDVPVsample = (PNDPV / (1-pDs.sum())) * PnotDhat
     # print("PDVPV", PDVPV)
     # print("PDVPV", PDVPV, "PnotD", PnotDgivenV, "probVgivenNotD", probVgivenNotD, "probVgivenNotD * PnotDhat", probVgivenNotD * PnotDhat)
@@ -144,10 +145,11 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
     # One limitation is that we are constrained by the conditions we've included
     # so to get a true allele count for 
     PVnotD = pVgivenNotD(pD=pDs, pV=afMean, pVgivenD=PVDs)
-
+    # print("PV|D", PVDs)
+    # print("PVnotD", PVnotD)
     # print("probVgivenNotD", probVgivenNotD)
     # print("probVgivenNotD", probVgivenNotD)
-    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
+    
     N = nCases.sum() + nCtrls
     PnotD = 1 - pDs.sum()
     PDhat = nCases / N
@@ -155,12 +157,14 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
 
     totalProbabilityPopulation = tensor([PVnotD * PnotD, *(PVDs*pDs)]).sum()
     assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
-
+    # print("totalProbabilityPopulation", totalProbabilityPopulation)
     p = tensor([PVnotD * PnotDhat, *(PVDs * PDhat)])
     marginalAlleleCount = int(p.sum() * N)
     # print("p.sum", p.sum())
+    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
+    # print("PnotDhat",PnotDhat, "pDhat", PDhat)
 
-    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
+    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p, PVnotD, PVDs
 
 # Like the 4b case, but multinomial
 # TODO: shoudl we do int() or some rounding function to go from float counts to int counts
@@ -929,8 +933,8 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
             while affects - 1 >= len(affectedGenes):
                 affectedGenes.append([])
             affectedGenes[affects - 1].append(geneIdx)
-        altCountsGene, p = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
-       
+        altCountsGene, p, PVnotD, PVDs = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
+        print(geneIdx, "p", p)
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
 
@@ -938,7 +942,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     probs = tensor(probs)
 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
-    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth}
+    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVnotD": PVnotD, "PVDs": PVDs}
 
     # print("pdBothThresh", pdBothThresh)
     # print("PDBothGivenVthreshold", PDBothGivenVthreshold)
