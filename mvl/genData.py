@@ -103,12 +103,12 @@ def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,
     # print("pDs", pDs)
     # This is also P(V|D)P(D)
     PVD = PDVs * afMean / pDs
-    print("PV|D", PVD)
+    # print("PV|D", PVD)
     PDVPVsample = PVD * PDhat
     # print("afMean", afMean)
     # print("pDs", pDs)
-    print("PDhat", PDhat)
-    print("PDVPVsample", PDVPVsample)
+    # print("PDhat", PDhat)
+    # print("PDVPVsample", PDVPVsample)
     PNDVPVsample = (PNDPV / (1-pDs.sum())) * PnotDhat
     # print("PDVPV", PDVPV)
     # print("PDVPV", PDVPV, "PnotD", PnotDgivenV, "probVgivenNotD", probVgivenNotD, "probVgivenNotD * PnotDhat", probVgivenNotD * PnotDhat)
@@ -128,12 +128,21 @@ def genAlleleCountFromPDVS(nCases: Tensor, nCtrls: Tensor, PDVs = tensor([1.,1.,
     assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
 
     p = tensor([PNDVPVsample, *PDVPVsample])
-    assert p.sum() < 1
+    assert p.sum() == 1
     marginalAlleleCount = int(p.sum() * N)
 
     return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p
 
-def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,1.]), afMean = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
+
+def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,1.]), gene_af = 1e-4, pDs = tensor([.01,.01,.002]), **kwargs):
+    """
+    Starting from the true population estimate, P(V|D) we generate the in-sample P(D|V), and use that as our multinomial allele frequecny
+    This value is approximately rr*P(D)
+    We cannot simply multiply P(V|D) * P(D_hat) because the result may be larger than P(V)
+    Instead we need to normalize by the difference between P(D_hat) and P(D)
+    P(V|D) * P(D_hat) * P(D) / P(D_hat)? No, P(D|V) is exclusive of P(D)
+    It is only later, in inference that we need to re-scale
+    """
     # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
     # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
     # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
@@ -142,29 +151,38 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
     # P(V|D)   
     assert(PVDs.shape[0] == 3)
 
-    # One limitation is that we are constrained by the conditions we've included
-    # so to get a true allele count for 
-    PVnotD = pVgivenNotD(pD=pDs, pV=afMean, pVgivenD=PVDs)
-    # print("PV|D", PVDs)
-    # print("PVnotD", PVnotD)
-    # print("probVgivenNotD", probVgivenNotD)
-    # print("probVgivenNotD", probVgivenNotD)
-    
     N = nCases.sum() + nCtrls
     PnotD = 1 - pDs.sum()
     PDhat = nCases / N
-    PnotDhat = nCtrls / N
 
-    totalProbabilityPopulation = tensor([PVnotD * PnotD, *(PVDs*pDs)]).sum()
-    assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
+    PVD_PD = PVDs * PDhat
+    PVND_PND = gene_af - PVD_PD.sum()
+    PVND = PVND_PND / PnotD
+
+    total_prob = PVND_PND + PVD_PD.sum()
+
+    print("PVD_PD", PVD_PD, "PVND_PND", PVND_PND, 'total_prob', total_prob, "expected", gene_af)
+
+    # One limitation is that we are constrained by the conditions we've included
+    # so to get a true allele count for 
+    # PVnotD = pVgivenNotD(pD=pDs, pV=afMean, pVgivenD=PVDs)
+    # A more precise estimate should be 
+    
+    
+    
+
+    
+    # assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
     # print("totalProbabilityPopulation", totalProbabilityPopulation)
-    p = tensor([PVnotD * PnotDhat, *(PVDs * PDhat)])
+    p = tensor([PVND_PND, *PVD_PD])
+    print("p.shape", p.shape)
+    assert p.sum(1) == gene_af
     marginalAlleleCount = int(p.sum() * N)
     # print("p.sum", p.sum())
     # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
     # print("PnotDhat",PnotDhat, "pDhat", PDhat)
 
-    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p, PVnotD, PVDs
+    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p, PVND, PVDs
 
 # Like the 4b case, but multinomial
 # TODO: shoudl we do int() or some rounding function to go from float counts to int counts
@@ -904,10 +922,15 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     afs = afDist.sample([nGenes, ])
     print("afs.dist", afs.mean(), "+/-", afs.std())
     print("afs.shape", afs.shape)
-    # We cannot have the P(D1|V) for samples affected by both conditions
-    # be larger than P(DBoth|V), and much much larger than rr * P(DBoth). Makes no sense
-    # Instead, we want P(V|D), the risk-inflated P(V) seen in cases as a result of the latent genetic architecture
-    # P(V|D)P(D) = P(D|V)P(V) ; So P(V|D) = P(D|V)P(V) / P(D)
+    ############# Our multinomial probabilities are, in the margin P(V|gene) ###############################
+    # This is decomposed into P(V|Disesase1)P(Disease1) + P(V|Disease2)P(Disease2) ... for every gene
+    # To get P(V|Disease) from P(Disease|V), we note
+    # P(D|V)P(V) = P(V|D)P(D), SO P(V|D) = P(D|V)*P(V) / P(D)
+    # For every gene we have an allele frequency, P(V), sampled from the gamma distribution
+    # And we calculate penetrance ( P(D|V) ) above using the mean effects for each genetic architecture
+    # So now we need to multiple by P(V), and divide the result by P(D)
+    # This gives our true population estimate
+    #########################################################################################################
     pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2) / pDsWithBoth
     pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(pvd_base.shape) * pvd_base
     
@@ -923,7 +946,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     unaffectedGenes = []
     altCounts = []
     probs = []
-
+    PVDs = []
     for geneIdx in range(nGenes):
         affects = categories[geneIdx]
 
@@ -933,16 +956,18 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
             while affects - 1 >= len(affectedGenes):
                 affectedGenes.append([])
             affectedGenes[affects - 1].append(geneIdx)
-        altCountsGene, p, PVnotD, PVDs = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
-        print(geneIdx, "p", p)
+        altCountsGene, p, pvnd, pvd = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
+        # print(geneIdx, "p", p)
         altCounts.append(altCountsGene.numpy())
         probs.append(p.numpy())
+        PVDs.append([pvnd, *pvd])
 
     altCounts = tensor(altCounts)
     probs = tensor(probs)
+    PVDs = tensor(PVDs)
 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
-    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVnotD": PVnotD, "PVDs": PVDs}
+    return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVDs": PVDs}
 
     # print("pdBothThresh", pdBothThresh)
     # print("PDBothGivenVthreshold", PDBothGivenVthreshold)
