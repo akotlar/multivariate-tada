@@ -81,7 +81,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     # TODO: I think this must be covShared, where covShared is genetic correlation + environmental
     # otherwise I can get cases where P(V|DBoth,geneBoth) is much smaller than P(V|D1, geneBoth) and P(V|D2, geneBoth), given the exact
     # same covariance
-    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0, 0]), covShared))
+    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), covShared))
     PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
     pDsWithBoth = tensor([*pDs, PDBoth])
 
@@ -211,7 +211,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
 
     return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVDs": PVDs}
 
-def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, .5], [.5, 1]]), covSingle=tensor([[1, 0], [0, 1]]), meanEffectCovarianceScale=tensor(.01), pDs=None, rrtype="default", **kwargs):
+def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, .5], [.5, 1]]), covSingle=tensor([[1., 0.], [0., 1.]]), meanEffectCovarianceScale=tensor(.01), pDs=None, rrtype="default", **kwargs):
     nGenes = 20_000
 
     assert pDs is not None
@@ -233,7 +233,7 @@ def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3.
     }]
 
 def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
-             meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1, .5], [.5, 1]]), covSingle = tensor([ [1, .2], [.2, 1]]), **kwargs):
+             meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1., .5], [.5, 1.]]), covSingle = tensor([ [1., .2], [.2, 1.]]), **kwargs):
     residualCovariance = covSingle
 
     def getTargetMeanEffect(PD: Tensor, rrTarget: Tensor):
@@ -253,8 +253,10 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     thresh1 = n.icdf(pDs[0])
     thresh2 = n.icdf(pDs[1])
 
-    shared_cov = covShared * meanEffectCovarianceScale
-    residual_cov = residualCovariance * meanEffectCovarianceScale
+    # TODO: I think we need to assert 1 on the diagonal for residualCovariance and covShared
+
+    shared_cov_scaled = covShared * meanEffectCovarianceScale
+    residual_cov_scaled = residualCovariance * meanEffectCovarianceScale
     print("PD1 threshold, PD2 threshold", thresh1, thresh2)
     # Interesting; this PDBoth will shrink if there is more correlation between these traits
     # if correlation is 0, then the cdf appears nearly additive, and if correlation close to 1, 
@@ -263,7 +265,9 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     # TODO: I think this must be covShared, where covShared is genetic correlation + environmental
     # otherwise I can get cases where P(V|DBoth,geneBoth) is much smaller than P(V|D1, geneBoth) and P(V|D2, geneBoth), given the exact
     # same covariance
-    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0, 0]), residual_cov))
+    # TODO: should this be done weighing the different components?
+    print(covSingle)
+    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), residualCovariance))
     PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
     pDsWithBoth = tensor([*pDs, PDBoth])
 
@@ -273,7 +277,8 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     meanEffectsAcrossAllGenes = getTargetMeanEffect(pDs, rrMeans)
     print("meanEffectsAcrossAllGenes", meanEffectsAcrossAllGenes)
 
-    effectGenerator = MultivariateNormal(meanEffectsAcrossAllGenes, shared_cov)
+    # Covariances scaled to prevent very large mean effects
+    effectGenerator = MultivariateNormal(meanEffectsAcrossAllGenes, shared_cov_scaled)
     #dims 20_000 x 2
     allEffects = -effectGenerator.sample([nGenes])
     print("allEffects", allEffects)
@@ -289,7 +294,7 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     for i in range(nGenes):
         # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
         # scipy requires ndim == 1 on means
-        mvn = MultivariateNormal(allEffects[i], residual_cov)
+        mvn = MultivariateNormal(allEffects[i], covShared)
         mvnw = WrappedMVN(mvn)
 
         PDBothGivenV.append(mvnw.cdf(tensor([thresh1, thresh2])))
@@ -305,7 +310,7 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,2])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,2]))
 
     ############### Calculate effects in genes that affect a single conditions ##################
-    effectGenerator= MultivariateNormal(meanEffectsAcrossAllGenes, residual_cov)
+    effectGenerator= MultivariateNormal(meanEffectsAcrossAllGenes, residual_cov_scaled)
     allEffectsFor12 = -effectGenerator.sample([nGenes])
     pd1Gen = N(allEffectsFor12[:, 0], 1)
     pd2Gen = N(allEffectsFor12[:, 1], 1)
@@ -315,8 +320,8 @@ def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = te
     PDBoth1GivenV = []
     PDBoth2GivenV = []
     for i in range(nGenes):
-        mvn = MultivariateNormal(tensor([allEffectsFor12[i, 0], 0]), residual_cov)
-        mvn2 = MultivariateNormal(tensor([0, allEffectsFor12[i, 1]]), residual_cov)
+        mvn = MultivariateNormal(tensor([allEffectsFor12[i, 0], 0]), residualCovariance)
+        mvn2 = MultivariateNormal(tensor([0, allEffectsFor12[i, 1]]), residualCovariance)
         mvnw1 = WrappedMVN(mvn)
         mvnw2 = WrappedMVN(mvn2)
 
