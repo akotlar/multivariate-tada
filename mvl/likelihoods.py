@@ -148,6 +148,7 @@ def pVgivenDapprox(rr, pV):
 #     PDVall = pV
 
 def pVgivenNotD(pD, pV, pVgivenD):
+    assert 1 - pD.sum() > 0
     p = (pV - (pD*pVgivenD).sum()) / (1 - pD.sum())
     if(p < 0):
         raise ValueError(

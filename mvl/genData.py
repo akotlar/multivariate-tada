@@ -142,47 +142,25 @@ def genAlleleCountFromPVDS(nCases: Tensor, nCtrls: Tensor, PVDs = tensor([1.,1.,
     Instead we need to normalize by the difference between P(D_hat) and P(D)
     P(V|D) * P(D_hat) * P(D) / P(D_hat)? No, P(D|V) is exclusive of P(D)
     It is only later, in inference that we need to re-scale
-    """
-    # rrs: for genes affecting both D1 & D2, rr = rr1 + rr2 + rrShared
-    # and then P(V|DBoth) = P(V)(rr1 + rr2 + rrShared)
-    # and then P(DBoth|V) = P(V)(rr1 + rr2 + rrShared) * P(DBoth)
-    # P(D1|V) = P(V)rr1  * P(D1)
-    # P(D2|V) ...
-    # P(V|D)   
-    assert(PVDs.shape[0] == 3)
 
+    Generates 1 pooled control population
+    """
     N = nCases.sum() + nCtrls
-    PnotD = 1 - pDs.sum()
     PDhat = nCases / N
 
-    PVD_PD = PVDs * PDhat
-    PVND_PND = gene_af - PVD_PD.sum()
-    PVND = PVND_PND / PnotD
+    PND = 1.0 - pDs.sum()
+    PNDhat = 1.0 - PDhat.sum()
 
-    total_prob = PVND_PND + PVD_PD.sum()
+    pop_estimate_pvd_pd = (PVDs * pDs)
+    PVND_PND_POP = gene_af - pop_estimate_pvd_pd.sum()
+    assert PVND_PND_POP > 0
 
-    print("PVD_PD", PVD_PD, "PVND_PND", PVND_PND, 'total_prob', total_prob, "expected", gene_af)
+    PVND = PVND_PND_POP / PND
 
-    # One limitation is that we are constrained by the conditions we've included
-    # so to get a true allele count for 
-    # PVnotD = pVgivenNotD(pD=pDs, pV=afMean, pVgivenD=PVDs)
-    # A more precise estimate should be 
-    
-    
-    
+    marginalAltCount = int(torch.ceil(PVND * nCtrls + (PVDs * nCases).sum()))
+    p = tensor([PVND, *PVDs]) * tensor([PNDhat, *PDhat])
 
-    
-    # assert (abs(totalProbabilityPopulation-afMean) / afMean) <= 1e-6
-    # print("totalProbabilityPopulation", totalProbabilityPopulation)
-    p = tensor([PVND_PND, *PVD_PD])
-    print("p.shape", p.shape)
-    assert p.sum(1) == gene_af
-    marginalAlleleCount = int(p.sum() * N)
-    # print("p.sum", p.sum())
-    # print("pDs", pDs, "1-pDs.sum()", 1 - pDs.sum())
-    # print("PnotDhat",PnotDhat, "pDhat", PDhat)
-
-    return Multinomial(probs=p, total_count=marginalAlleleCount).sample(), p, PVND, PVDs
+    return Multinomial(probs=p, total_count=marginalAltCount).sample(), p, PVND, PVDs
 
 # Like the 4b case, but multinomial
 # TODO: shoudl we do int() or some rounding function to go from float counts to int counts
@@ -730,8 +708,8 @@ def v6normal(nCases: Tensor, nCtrls: Tensor, pDs = tensor([.01, .01, .002]), pNo
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
     return {"altCounts": altCounts, "afs": probs, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "rrs": rrAll}
 
-def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
-    return corrMatrx * torch.prod(variances)
+# def makeCovarianceMatrix(corrMatrix: Tensor, variances: Tensor):
+#     return corrMatrx * torch.prod(variances)
 
 # With rr == 1, P(V|D) == P(V) * rr
 # RR's are calculated from mean effects; the liability shift that is evidenced by 
@@ -811,10 +789,11 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     pDsWithBoth = tensor([*pDs, PDBoth])
 
     print("pDsWithBoth", pDsWithBoth)
-    
+    # return
     ### Calculate effects in genes that affect both conditions ###
     # No matter how I scale the covariance matrix, correlation will remain the same, great!
     meanEffectsAcrossAllGenes = getTargetMeanEffect(pDs, rrMeans)
+    # Effects [eff1_mean, eff2_mean]
     print("meanEffectsAcrossAllGenes", meanEffectsAcrossAllGenes)
 
     effectGenerator = MVN(meanEffectsAcrossAllGenes, covShared * meanEffectCovarianceScale)
@@ -934,9 +913,9 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2) / pDsWithBoth
     pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(pvd_base.shape) * pvd_base
     
-    print("pvd_base", pvd_base)
+    # print("pvd_base", pvd_base)
     print("afs", afs)
-    print("pvds", pvds)
+    # print("pvds", pvds)
 
     pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
     categorySampler = Categorical(pis)
@@ -965,6 +944,7 @@ def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = ten
     altCounts = tensor(altCounts)
     probs = tensor(probs)
     PVDs = tensor(PVDs)
+    print("probs", probs)
 
     # cannot convert affectedGenes to tensor; apparently tensors need to have same dimensions at each level of the tensor...stupid
     return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVDs": PVDs}
