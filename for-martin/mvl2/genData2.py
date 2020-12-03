@@ -68,7 +68,7 @@ def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3.
     }]
 
 def liabilitySumStat(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
-             geneticVariance=tensor(.08), totalVariance=tensor(.1), geneticCorrelation=tensor([ [1., .5], [.5, 1.]]), residualCorrelation = tensor([ [1., .2], [.2, 1.]]), **kwargs):
+             phenotypicCorrelation = tensor([[1., 0.], [0., 1.]]), geneticVariance=tensor(.08), totalVariance=tensor(.1), geneticCorrelation=tensor([ [1., .5], [.5, 1.]]), residualCorrelation = tensor([ [1., .2], [.2, 1.]]), **kwargs):
     def getTargetMeanEffect(PD: Tensor, rrTarget: Tensor):
         norm = N(0, 1)
         pdThresh = norm.icdf(1 - PD)
@@ -81,6 +81,7 @@ def liabilitySumStat(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions 
         print("meanEffect", meanEffect)
         return meanEffect
 
+    # rg = covg/torch.sqrt(hx * hy)
     ####################### Calculate P(DBoth) given genetic correlation ##############################
     n = N(0, 1)
     thresh1 = n.icdf(pDs[0])
@@ -88,11 +89,17 @@ def liabilitySumStat(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions 
 
     residualVariance = totalVariance - geneticVariance
     print("totalVariance", totalVariance, "geneticVariance", geneticVariance, "residualVariance", residualVariance)
-
+    
+    print("phenotypicCorrelation", phenotypicCorrelation)
+    print('genetiCorrelation', geneticCorrelation)
+    print('residualCorrelation', residualCorrelation)
     genetic_covariance = geneticCorrelation * geneticVariance
     residual_covariance = residualCorrelation * residualVariance
-
-    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), residualCorrelation))
+    print("genetic_covariance", genetic_covariance)
+    print("residual_covariance", residual_covariance)
+    # TODO: should this be phenotypic correlation or residual?
+    # I think prevalence should be due to both due to genetic and environmental reasons
+    pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), phenotypicCorrelation))
     PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
     pDsWithBoth = tensor([*pDs, PDBoth])
 
