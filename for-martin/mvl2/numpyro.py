@@ -73,8 +73,8 @@ def model_mvn(data, nCases: np.array, nCtrls: int, nHypotheses: int, alpha: floa
         z = numpyro.sample("z", Categorical(mix_weights(beta)))
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-def infer(model_to_run, data, nCases: np.array, nCtrls: int) -> MCMC:
-    mcmc = MCMC(NUTS(model_to_run, max_tree_depth=8), num_warmup=200, num_samples=1000)
+def infer(model_to_run, data, nCases: np.array, nCtrls: int, max_tree_depth=8) -> MCMC:
+    mcmc = MCMC(NUTS(model_to_run, max_tree_depth=max_tree_depth), num_warmup=200, num_samples=1000)
     mcmc.run(random.PRNGKey(12269), data, nCases, nCtrls, 12)
     mcmc.print_summary()
     return mcmc
