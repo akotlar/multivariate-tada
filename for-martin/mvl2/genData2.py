@@ -20,7 +20,7 @@ class WrappedMVN():
         l = lower.expand(self.mvn.mean.shape)
         return self.scimvn.cdf(l)
 
-def gene_alt_counts_from_PVD(n_cases: Tensor, n_ctrls: int, PVD = tensor([1.,1.,1.]), PV_gene: int = 1e-4, PD = tensor([.01,.01,.002]), **kwargs):
+def gene_alt_counts_from_PVD(n_cases: Tensor, n_ctrls: int, PVD: Tensor, PV_gene: int, PD: Tensor):
     """
     Starting from the true population estimate, P(V|D) we generate the in-sample P(D|V), and use that as our multinomial allele frequecny
     This value is approximately rr*P(D)
@@ -31,21 +31,30 @@ def gene_alt_counts_from_PVD(n_cases: Tensor, n_ctrls: int, PVD = tensor([1.,1.,
 
     Generates 1 pooled control population
     """
+    assert n_cases.shape == PVD.shape and n_cases.shape == PD.shape
+
     N = n_cases.sum() + n_ctrls
     PD_hat = n_cases / N
 
     PND = 1.0 - PD.sum()
     PNDhat = 1.0 - PD_hat.sum()
+    PVD_PD = (PVD * PD)
 
-    PVD_PD_pop_estimate= (PVD * PD)
-    PVND_PND_POP = PV_gene - PVD_PD_pop_estimate.sum()
+    PVND_PND_POP = PV_gene - PVD_PD.sum()
+
+    if PVND_PND_POP < 0:
+        print("PND", PND)
+        print("PV_gene", PV_gene)
+        print("PVD", PVD)
+        print("PVD_PD_pop_estimate", PVD_PD, "PVD_PD.sum()", PVD_PD.sum())
+        print("PVND_PND_POP", PVND_PND_POP)
+
     assert PVND_PND_POP > 0
 
     PVND = PVND_PND_POP / PND
 
     marginalAltCount = int(torch.ceil(PVND * n_ctrls + (PVD * n_cases).sum()))
     PVD_PD_hat = tensor([PVND, *PVD]) * tensor([PNDhat, *PD_hat])
-    print("PVD_PD_hat", PVD_PD_hat, "tensor([PNDhat, *PD_hat])", tensor([PNDhat, *PD_hat]), "PVD_PD_hat", PVD_PD_hat)
     return Multinomial(probs=PVD_PD_hat, total_count=marginalAltCount).sample(), PVD_PD_hat, PVND, PVD
 
 def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, .5], [.5, 1]]), covSingle=tensor([[1., 0.], [0., 1.]]), meanEffectCovarianceScale=tensor(.01), pDs=None, rrtype="default", **kwargs):
@@ -124,9 +133,7 @@ def corrcoef(x):
 
     return c
 
-# TODO: support > 2 conditions
-# https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6028255/
-# r_e = r_p - r_g*sqrt(h1^2 * h2^2)/sqrt((1-h1^2)*(1-h2^2))
+################# TODO: support > 2 conditions ##################
 # but from https://www.jstor.org/stable/pdf/2527838.pdf
 # r_p = r_g*sqrt(h1^2 * h2^2) + r_e*sqrt((1-h1^2)*(1-h2^2))
 # so r_e = (r_p - r_g*sqrt(h1 * h2))/sqrt((1-h1)*(1-h2))
@@ -166,44 +173,49 @@ r_g = tensor([[1., 5.], [.5, 1.]])) -> Dict[str, torch.Tensor]:
         "cov_p": cov_p, "cov_g": cov_g, "cov_e": cov_e
     }
 
-# TOOD: Support > 2
 def gen_counts(
-    n_cases = tensor([1.5e4, 1.5e4, 4e3]),
-    n_ctrls = tensor(5e4),
-    n_genes=20000,
-    pi = tensor([.05, .05, .01]),
-    PD = tensor([.01, .01]),
-    RR_mean = tensor([3, 5]),
-    PV_mean = tensor(1e-4),
-    PV_shape = tensor(50.),
-    r_p = tensor([[1., 0.], [0., 1.]]),
-    r_g = tensor([[1., 0.], [0., 1.]]),
-    r_e = tensor([[1., 0.], [0., 1.]]),
-    cov_p = tensor([[1., 0.], [0., 1.]]),
-    cov_g = tensor([[1., 0.], [0., 1.]]),
-    cov_e = tensor([[1., 0.], [0., 1.]]),
-    fudge_factor = tensor(1.), **kwargs):
-    def get_target_mean_effects(PD: Tensor, rr_target: Tensor):
-        norm = N(0, 1 * fudge_factor)
-        pd_threshold = norm.icdf(1 - PD)
-        pd_target = PD * rr_target
-        pdv_threshold = norm.icdf(1 - pd_target)
-        meanEffect = pd_threshold - pdv_threshold
-        return meanEffect
+    n_cases: Tensor,
+    n_ctrls: Tensor,
+    pi: Tensor,
+    PD: Tensor,
+    RR_mean: Tensor,
+    PV_mean: Tensor,
+    PV_shape: Tensor,
+    r_p: Tensor,
+    r_g: Tensor,
+    r_e: Tensor,
+    cov_p: Tensor,
+    cov_g: Tensor,
+    cov_e: Tensor,
+    n_genes: int = 20000,
+    **kwargs):
+    assert PD.shape[0] == 2
 
+    def get_target_mean_effects(PD: Tensor, rr_target: Tensor):
+        norm1 = N(0, cov_p[0,0])
+        norm2 = N(0, cov_p[1,1])
+        pd_threshold1 = norm1.icdf(1 - PD[0])
+        pd_threshold2 = norm2.icdf(1 - PD[1])
+        pd_target = PD * rr_target
+        print("pd_target", pd_target)
+        pdv_threshold1 = norm1.icdf(1 - pd_target[0])
+        pdv_threshold2 = norm2.icdf(1 - pd_target[1])
+        mean_effect = tensor([pd_threshold1 - pdv_threshold1, pd_threshold2 - pdv_threshold2])
+        return mean_effect
+    print("cov_p[0,0]", cov_p[0,0])
+    print("cov_p[1,1]", cov_p[1,1])
     # rg = covg/torch.sqrt(hx * hy)
     ####################### Calculate P(DBoth) given genetic correlation ##############################
-    n1= N(0, 1 * fudge_factor)
+    n1= N(0, cov_p[0,0])
     thresh1 = n1.icdf(PD[0])
-    n2 = N(0, 1 * fudge_factor)
+    n2 = N(0, cov_p[1,1])
     thresh2 = n2.icdf(PD[1])
 
-    thresholds = N(0, torch.ones(PD.shape))
-    print(thresholds)
+    print("thresholds 1&2", thresh1, thresh2)
 
     # TODO: should this be phenotypic correlation or residual?
     # I think prevalence should be due to both due to genetic and environmental reasons
-    pd_both_generator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), r_p * fudge_factor))
+    pd_both_generator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), cov_p))
     PD_both = tensor(pd_both_generator.cdf(tensor([thresh1, thresh2])))
     PD_with_both = tensor([*PD, PD_both])
 
@@ -212,19 +224,19 @@ def gen_counts(
     mean_effects = get_target_mean_effects(PD, RR_mean)
     print("mean_effects", mean_effects)
 
-    effects_generator_affects_both = MultivariateNormal(mean_effects, cov_g * fudge_factor)
+    effects_generator_affects_both = MultivariateNormal(mean_effects, cov_g)
     # Shape nGenes x nIndependentEffects
     effects_given_affects_both = -effects_generator_affects_both.sample([n_genes])
 
     # TODO: why is this sampling with variance 1?
-    PD1V_gen = N(effects_given_affects_both[:, 0], 1 * fudge_factor)
-    PD2V_gen = N(effects_given_affects_both[:, 1], 1 * fudge_factor)
+    PD1V_gen = N(effects_given_affects_both[:, 0], 1)
+    PD2V_gen = N(effects_given_affects_both[:, 1], 1)
     PD1V_given_affects_both = PD1V_gen.cdf(thresh1) 
     PD2V_given_affects_both = PD2V_gen.cdf(thresh2)
 
     PD12V_given_affects_both = []
     for i in range(n_genes):
-        mvn = MultivariateNormal(effects_given_affects_both[i], torch.eye(2) * fudge_factor)
+        mvn = MultivariateNormal(effects_given_affects_both[i], torch.eye(2))
         mvnw = WrappedMVN(mvn)
 
         PD12V_given_affects_both.append(mvnw.cdf(tensor([thresh1, thresh2])))
@@ -238,18 +250,18 @@ def gen_counts(
     print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,2])\n", np.corrcoef(PDV_gene_affects_both[:,0], PDV_gene_affects_both[:,2]))
 
     ############### Calculate effects in genes that affect a single conditions ##################
-    effect_generator_affects_one = MultivariateNormal(mean_effects, cov_e * fudge_factor)
+    effect_generator_affects_one = MultivariateNormal(mean_effects, cov_e)
     effects_given_affects_one = -effect_generator_affects_one.sample([n_genes])
-    PD1V_gen = N(effects_given_affects_one[:, 0], 1 * fudge_factor)
-    PD2V_gen = N(effects_given_affects_one[:, 1], 1 * fudge_factor)
+    PD1V_gen = N(effects_given_affects_one[:, 0], 1)
+    PD2V_gen = N(effects_given_affects_one[:, 1], 1)
     PD1V_given_affects_1 = PD1V_gen.cdf(thresh1)
     PD2V_given_affects_2 = PD2V_gen.cdf(thresh2)
 
     PD12V_given_affects_1 = []
     PD12V_given_affects_2 = []
     for i in range(n_genes):
-        mvn = MultivariateNormal(tensor([effects_given_affects_one[i, 0], 0]), torch.eye(2) * fudge_factor)
-        mvn2 = MultivariateNormal(tensor([0, effects_given_affects_one[i, 1]]), torch.eye(2) * fudge_factor)
+        mvn = MultivariateNormal(tensor([effects_given_affects_one[i, 0], 0]), torch.eye(2))
+        mvn2 = MultivariateNormal(tensor([0, effects_given_affects_one[i, 1]]), torch.eye(2))
         mvnw1 = WrappedMVN(mvn)
         mvnw2 = WrappedMVN(mvn2)
 
@@ -261,16 +273,17 @@ def gen_counts(
     print("PD12V_given_affects_1", PD12V_given_affects_1)
     print("PD12V_given_affects_2", PD12V_given_affects_2)
 
-    print("np.corrcoef(PD1_given_V1, PD2_given_V2)\n", np.corrcoef(PD1V_given_affects_1, PD2V_given_affects_2))
-    print("np.corrcoef(PD1_given_V1, PD12_given_V1)\n", np.corrcoef(PD1V_given_affects_1, PD2V_given_affects_2))
-    print("np.corrcoef(PD2_given_V2, PD12_given_V2)\n", np.corrcoef(PD2V_given_affects_2, PD12V_given_affects_2))
+    print("np.corrcoef(PD1V_given_affects_1, PD2V_given_affects_2)\n", np.corrcoef(PD1V_given_affects_1, PD2V_given_affects_2))
+    print("np.corrcoef(PD1V_given_affects_1, PD12V_given_affects_1)\n", np.corrcoef(PD1V_given_affects_1, PD12V_given_affects_1))
+    print("np.corrcoef(PD2V_given_affects_2, PD12V_given_affects_1)\n", np.corrcoef(PD2V_given_affects_2, PD12V_given_affects_1))
+    print("np.corrcoef(PD2V_given_affects_2, PD12V_given_affects_2)\n", np.corrcoef(PD2V_given_affects_2, PD12V_given_affects_2))
 
     PDV_gene_affects_1 = torch.stack([PD1V_given_affects_1, PD[1].expand([n_genes]), PD12V_given_affects_1])
     PDV_gene_affects_2 = torch.stack([PD[0].expand([n_genes]), PD2V_given_affects_2, PD12V_given_affects_2])
     PDV_gene_affects_none = PD_with_both.expand(PDV_gene_affects_1.T.shape).T
 
-    PV_dist = Gamma(concentration=PV_shape, rate=PV_shape/PV_mean)
-    PV = PV_dist.sample([n_genes, ])
+    #PV_dist = Gamma(concentration=PV_shape, rate=PV_shape/PV_mean)
+    PV = PV_mean.expand(n_genes)#PV_dist.sample([n_genes, ])
     
     print("PDV_gene_affects_1.mean", PDV_gene_affects_1.mean(0))
     print("PV.dist", PV.mean(), "+/-", PV.std())
@@ -278,14 +291,19 @@ def gen_counts(
     ############# Our multinomial probabilities are, in the margin P(V|D,gene) ###############################
     # This is decomposed into P(V|Disesase1)P(Disease1) + P(V|Disease2)P(Disease2) ... for every gene
     # To get P(V|Disease) from P(Disease|V), we note
-    # P(D|V)P(V) = P(V|D)P(D), SO P(V|D) = P(D|V)*P(V) / P(D)
+    # P(D|V)P(V) = P(V|D)P(D)
+    # P(D|V) = P(V|D)P(D)/P(V)
+    # P(D|V)*P(V)/P(D) = P(V|D)
     # For every gene we have an allele frequency, P(V), sampled from the gamma distribution
     # Calculate penetrance P(D|V) using the mean effects for each genetic architecture
     # To get the inverse, P(V|D), use bayes theorem
     #########################################################################################################
-    PDV_stacked = torch.stack([PDV_gene_affects_none, PDV_gene_affects_1, PDV_gene_affects_2, PDV_gene_affects_both.T]).transpose(2, 0).transpose(1,2) / PD_with_both
-    PVD_possible = PV.unsqueeze(-1).unsqueeze(-1).expand(PDV_stacked.shape) * PDV_stacked
-
+    PDV= torch.stack([PDV_gene_affects_none, PDV_gene_affects_1, PDV_gene_affects_2, PDV_gene_affects_both.T]).transpose(2, 0).transpose(1,2)
+    print("PDV", PDV)
+    PV_expanded = PV.unsqueeze(-1).unsqueeze(-1).expand(PDV.shape)
+    print("PV_expanded", PV_expanded)
+    PVD_possible = PDV * PV_expanded / PD_with_both
+    print("PVD_possible", PVD_possible)
     pis = tensor([1 - pi.sum(), *pi])
     category_sampler = Categorical(pis)
     categories  = category_sampler.sample([n_genes,])
@@ -295,20 +313,29 @@ def gen_counts(
     alt_counts = []
     PVD_PD_hats = []
     PVDs = []
-    for geneIdx in range(n_genes):
+    def run(geneIdx):
         affects = categories[geneIdx]
 
         if affects == 0:
-            affected_genes.append(geneIdx)
+            unaffected_genes.append(geneIdx)
         else:
             while affects - 1 >= len(affected_genes):
                 affected_genes.append([])
             affected_genes[affects - 1].append(geneIdx)
-        alt_count_gene, PVD_PD_hat, PVND, PVD = gene_alt_counts_from_PVD(n_cases = n_cases, nCtrn_ctrlsls = n_ctrls, PVDs = PVD_possible[geneIdx, affects], afMean = PV[geneIdx], pDs = PD_with_both)
+
+        alt_count_gene, PVD_PD_hat, PVND, PVD = gene_alt_counts_from_PVD(n_cases = n_cases, n_ctrls = n_ctrls, PVD = PVD_possible[geneIdx, affects], PV_gene = PV[geneIdx], PD = PD_with_both)
 
         alt_counts.append(alt_count_gene.numpy())
         PVD_PD_hats.append(PVD_PD_hat.numpy())
         PVDs.append([PVND, *PVD])
+
+    for geneIdx in range(n_genes):
+        try:
+            run(geneIdx)
+        except Exception:
+            print(f"failed on {geneIdx}, retrying")
+            run(geneIdx)
+        
 
     alt_counts = tensor(alt_counts)
     PVD_PD_hats = tensor(PVD_PD_hats)
