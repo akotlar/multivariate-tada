@@ -192,8 +192,8 @@ def gen_counts(
     assert PD.shape[0] == 2
 
     def get_target_mean_effects(PD: Tensor, rr_target: Tensor):
-        norm1 = N(0, cov_p[0,0])
-        norm2 = N(0, cov_p[1,1])
+        norm1 = N(0, 1)
+        norm2 = N(0, 1)
         pd_threshold1 = norm1.icdf(1 - PD[0])
         pd_threshold2 = norm2.icdf(1 - PD[1])
         pd_target = PD * rr_target
@@ -206,16 +206,16 @@ def gen_counts(
     print("cov_p[1,1]", cov_p[1,1])
     # rg = covg/torch.sqrt(hx * hy)
     ####################### Calculate P(DBoth) given genetic correlation ##############################
-    n1= N(0, cov_p[0,0])
+    n1= N(0, 1)
     thresh1 = n1.icdf(PD[0])
-    n2 = N(0, cov_p[1,1])
+    n2 = N(0, 1)
     thresh2 = n2.icdf(PD[1])
 
     print("thresholds 1&2", thresh1, thresh2)
 
     # TODO: should this be phenotypic correlation or residual?
     # I think prevalence should be due to both due to genetic and environmental reasons
-    pd_both_generator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), cov_p))
+    pd_both_generator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), r_p))
     PD_both = tensor(pd_both_generator.cdf(tensor([thresh1, thresh2])))
     PD_with_both = tensor([*PD, PD_both])
 
