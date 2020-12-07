@@ -88,12 +88,12 @@ def model_mvn(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: f
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 
-def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int,
-          num_warmup=200, num_samples=1000, num_chains: int = 2, chain_method: str = 'vectorized') -> MCMC:
+def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str) -> MCMC:
     mcmc = MCMC(
         NUTS(model_to_run, max_tree_depth=max_tree_depth),
         num_warmup=num_warmup, num_samples=num_samples,
-        jit_model_args=True, num_chains=num_chains, chain_method=chain_method
+        jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method
     )
     mcmc.run(random.PRNGKey(12269), data, n_cases, n_ctrls, max_K)
     mcmc.print_summary()
