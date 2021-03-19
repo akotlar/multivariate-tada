@@ -141,3 +141,19 @@ def run(sim_data, run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
         dill.dump(run_params, f)
 
     return mcmc, inferred_params
+
+def select_components(weights: np.array, threshold: float = .01):
+    accepted_indices = []
+    accepted_weight_means = []
+    accepted_weight_stds = []
+    weight_means = weights.mean(0)
+    weight_stds = weights.std(0)
+
+    for i, weight in enumerate(weight_means):
+        if weight >= .01:
+            accepted_indices.append(i)
+            accepted_weight_means.append(weight)
+            # for some reason else will come out device array
+            accepted_weight_stds.append(float(weight_stds[i]))
+
+    return {"mean": accepted_weight_means, "std": accepted_weight_stds, "indices": accepted_indices}

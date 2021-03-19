@@ -9,7 +9,7 @@ from torch import tensor, Tensor
 from scipy.stats import multivariate_normal as scimvn
 import numpy as np
 import torch
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
     
 class WrappedMVN():
     def __init__(self, mvn: MultivariateNormal):
@@ -61,9 +61,9 @@ r_g = tensor([[1., 5.], [.5, 1.]])) -> Dict[str, torch.Tensor]:
         "cov_p": cov_p, "cov_g": cov_g, "cov_e": cov_e
     }
 
-# TODO: Again check, still not seeing entirely whether I should be sampling mean effects from covariance or correlation matrices
-# TODO: values look very fucking weird without r_g ~= 0. Will get P(V|D) of < P(V) for individuals affected by both conditions, for genes that affect only 1 condition
-# TOOD: fucking means sometimes shift into the protective realm
+# TODO: Should I be sampling mean effects from covariance or correlation matrices?
+# TODO: Values look very fucking weird without r_g ~= 0. Will get P(V|D) of < P(V) for individuals affected by both conditions, for genes that affect only 1 condition
+# TODO: means sometimes shift into the protective realm
 def gen_counts(
     n_cases: Tensor,
     n_ctrls: Tensor,
@@ -71,7 +71,6 @@ def gen_counts(
     PD: Tensor,
     RR_mean: Tensor,
     PV_mean: Tensor,
-    PV_shape: Tensor,
     r_p: Tensor,
     r_g: Tensor,
     r_e: Tensor,
@@ -80,6 +79,7 @@ def gen_counts(
     cov_e: Tensor,
     n_genes: int = 20000,
     fudge_factor: int = 1.,
+    PV_shape: Optional[Tensor] = None,
     **kwargs):
     assert PD.shape[0] == 2
 
@@ -125,8 +125,12 @@ def gen_counts(
     category_sampler = Categorical(pis)
     categories  = category_sampler.sample([n_genes,])
 
-    PV = Gamma(PV_shape, PV_shape/PV_mean).sample([n_genes,])
-    print("PV", PV.mean(0), PV.std(0))
+    PV = None
+    if PV_shape is None:
+        PV = tensor(PV_mean).expand([n_genes,])
+    else:
+        PV = Gamma(PV_shape, PV_shape/PV_mean).sample([n_genes,])
+
     N = n_cases.sum() + n_ctrls
     PD_hat = n_cases / N
     PND = 1.0 - PD_with_both.sum()
@@ -175,10 +179,6 @@ def gen_counts(
         PVD = PVD_PD / PD_with_both
         PVND = PVND_PND_POP / PND
 
-        # print("affects", affects, "PVD", PVD)
-        # print("PDV", PDV, PD_with_both)
-        # print("affects", affects, "PVD", PVD)
-
         marginal_count = int(torch.ceil(PVND * n_ctrls + (PVD * n_cases).sum()))
         PVD_PD_hat = tensor([PVND, *PVD]) * tensor([PNDhat, *PD_hat])
         alt_count_gene = Multinomial(probs=PVD_PD_hat, total_count=marginal_count).sample()
@@ -202,185 +202,3 @@ def gen_counts(
         "alt_counts": alt_counts, "PV": PV, "PVDs": PVDs, "PD_with_both": PD_with_both, ""
         "PVD_PD_hats": PVD_PD_hats, "categories": categories, "affected_genes": affected_genes,
         "unaffected_genes": unaffected_genes}
-
-
-# def genParams(pis=tensor([.1, .1, .05]), rrShape=tensor(10.), rrMeans=tensor([3., 3., 1.5]), afShape=tensor(10.), afMean=tensor(1e-4), nCases=tensor([5e3, 5e3, 2e3]), nCtrls=tensor(5e5), covShared=tensor([[1, .5], [.5, 1]]), covSingle=tensor([[1., 0.], [0., 1.]]), meanEffectCovarianceScale=tensor(.01), pDs=None, rrtype="default", **kwargs):
-#     nGenes = 20_000
-
-#     assert pDs is not None
-
-#     return [{
-#         "nGenes": nGenes,
-#         "nCases": nCases,
-#         "nCtrls": nCtrls,
-#         "pDs": pDs,
-#         "diseaseFractions": pis,
-#         "rrShape": rrShape,
-#         "rrMeans": rrMeans,
-#         "afShape": afShape,
-#         "afMean": afMean,
-#         "covShared": covShared,
-#         "covSingle": covSingle,
-#         "meanEffectCovarianceScale": meanEffectCovarianceScale,
-#         "rrtype": rrtype
-#     }]
-
-
-# def v6liability2(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
-#              meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1., .5], [.5, 1.]]), covSingle = tensor([ [1., .2], [.2, 1.]]), **kwargs):
-#     residualCovariance = covSingle
-
-#     def get_target_mean_effects(PD: Tensor, rrTarget: Tensor):
-#         norm = N(0, 1)
-#         pdThresh = norm.icdf(1 - PD)
-#         pdTarget = PD * rrTarget
-#         print("pdThresh", pdThresh)
-#         print("pdTarget", pdTarget)
-#         pdvthresh = norm.icdf(1 - pdTarget)
-#         print("pdvthresh", pdvthresh)
-#         meanEffect = pdThresh - pdvthresh
-#         print("meanEffect", meanEffect)
-#         return meanEffect
-
-#     ####################### Calculate P(DBoth) given genetic correlation ##############################
-#     n = N(0, 1)
-#     thresh1 = n.icdf(pDs[0])
-#     thresh2 = n.icdf(pDs[1])
-
-#     # TODO: I think we need to assert 1 on the diagonal for residualCovariance and covShared
-
-#     shared_cov_scaled = covShared * meanEffectCovarianceScale
-#     residual_cov_scaled = residualCovariance * meanEffectCovarianceScale
-#     print("PD1 threshold, PD2 threshold", thresh1, thresh2)
-#     # Interesting; this PDBoth will shrink if there is more correlation between these traits
-#     # if correlation is 0, then the cdf appears nearly additive, and if correlation close to 1, 
-#     # the cdf appears nearly that of the larger of the two thresholds
-    
-#     # TODO: I think this must be covShared, where covShared is genetic correlation + environmental
-#     # otherwise I can get cases where P(V|DBoth,geneBoth) is much smaller than P(V|D1, geneBoth) and P(V|D2, geneBoth), given the exact
-#     # same covariance
-#     # TODO: should this be done weighing the different components?
-#     print(covSingle)
-#     pdBothGenerator = WrappedMVN(MultivariateNormal(tensor([0., 0.]), residualCovariance))
-#     PDBoth = tensor(pdBothGenerator.cdf(tensor([thresh1, thresh2])))
-#     pDsWithBoth = tensor([*pDs, PDBoth])
-
-#     print("pDsWithBoth", pDsWithBoth)
-#     ##################### Calculate effects in genes that affect both conditions #########################
-#     # No matter how I scale the covariance matrix, correlation will remain the same, great!
-#     meanEffectsAcrossAllGenes = get_target_mean_effects(pDs, rrMeans)
-#     print("meanEffectsAcrossAllGenes", meanEffectsAcrossAllGenes)
-
-#     # Covariances scaled to prevent very large mean effects
-#     effectGenerator = MultivariateNormal(meanEffectsAcrossAllGenes, shared_cov_scaled)
-#     #dims 20_000 x 2
-#     allEffects = -effectGenerator.sample([nGenes])
-#     print("allEffects", allEffects)
-
-#     pd1Gen = N(allEffects[:, 0], 1)
-#     pd2Gen = N(allEffects[:, 1], 1)
-#     PD1GivenV = pd1Gen.cdf(thresh1) 
-#     PD2GivenV = pd2Gen.cdf(thresh2)
-
-#     print("allEffects[i]", allEffects[0])
-
-#     PDBothGivenV = []
-#     for i in range(nGenes):
-#         # There may be a vectorized way, but would need to bring scipy's cdf method into pytorch
-#         # scipy requires ndim == 1 on means
-#         mvn = MultivariateNormal(allEffects[i], covShared)
-#         mvnw = WrappedMVN(mvn)
-
-#         PDBothGivenV.append(mvnw.cdf(tensor([thresh1, thresh2])))
-#     PDBothGivenV = tensor(PDBothGivenV)
-#     print("PDBothGivenV.mean", PDBothGivenV.mean())
-#     print("PDBothGivenV / PDBoth", (PDBothGivenV / PDBoth).mean())
-
-#     pdvsInBoth = torch.stack([PD1GivenV, PD2GivenV, PDBothGivenV]).T
-
-#     print("pdsCovarOnMean.mean(0)", pdvsInBoth.mean(0))
-#     # This has ~0 covariance for singel effets, and ~.6 correlation for one of the single effects with a joint effect
-#     print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,1])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,1]))
-#     print("np.corrcoef(pdvInBoth[:,0], pdvInBoth[:,2])\n", np.corrcoef(pdvsInBoth[:,0], pdvsInBoth[:,2]))
-
-#     ############### Calculate effects in genes that affect a single conditions ##################
-#     effectGenerator= MultivariateNormal(meanEffectsAcrossAllGenes, residual_cov_scaled)
-#     allEffectsFor12 = -effectGenerator.sample([nGenes])
-#     pd1Gen = N(allEffectsFor12[:, 0], 1)
-#     pd2Gen = N(allEffectsFor12[:, 1], 1)
-#     PD1Vsingle = pd1Gen.cdf(thresh1)
-#     PD2Vsingle = pd2Gen.cdf(thresh2)
-
-#     PDBoth1GivenV = []
-#     PDBoth2GivenV = []
-#     for i in range(nGenes):
-#         mvn = MultivariateNormal(tensor([allEffectsFor12[i, 0], 0]), residualCovariance)
-#         mvn2 = MultivariateNormal(tensor([0, allEffectsFor12[i, 1]]), residualCovariance)
-#         mvnw1 = WrappedMVN(mvn)
-#         mvnw2 = WrappedMVN(mvn2)
-
-#         PDBoth1GivenV.append(mvnw1.cdf(tensor([thresh1, thresh2])))
-#         PDBoth2GivenV.append(mvnw2.cdf(tensor([thresh1, thresh2])))
-#     PDBoth1GivenV = tensor(PDBoth1GivenV)
-#     PDBoth2GivenV = tensor(PDBoth2GivenV)
-
-#     print("PDBoth1GivenV", PDBoth1GivenV)
-#     print("PDBoth2GivenV", PDBoth2GivenV)
-
-#     print("np.corrcoef(PD1Vsingle, PD2Vsingle)\n", np.corrcoef(PD1Vsingle, PD2Vsingle))
-#     print("np.corrcoef(PD1Vsingle, PDBoth1GivenV)\n", np.corrcoef(PD1Vsingle, PDBoth1GivenV))
-#     print("np.corrcoef(PD2Vsingle, PDBoth1GivenV)\n", np.corrcoef(PD2Vsingle, PDBoth1GivenV))
-#     print("np.corrcoef(PD2Vsingle, PDBoth2GivenV)\n", np.corrcoef(PD2Vsingle, PDBoth2GivenV))
-
-#     pdvsGeneAffects1 = torch.stack([PD1Vsingle, pDs[1].expand([nGenes]), PDBoth1GivenV])
-#     pdvsGeneAffects2 = torch.stack([pDs[0].expand([nGenes]), PD2Vsingle, PDBoth2GivenV])
-#     pdvsNull = pDsWithBoth.expand(pdvsGeneAffects1.T.shape).T
-
-#     print("pdvsGeneAffects1.mean", pdvsGeneAffects1.mean(0))
-#     afDist = Gamma(concentration=afShape, rate=afShape/afMean)
-#     afs = afDist.sample([nGenes, ])
-#     print("afs.dist", afs.mean(), "+/-", afs.std())
-#     print("afs.shape", afs.shape)
-#     ############# Our multinomial probabilities are, in the margin P(V|gene) ###############################
-#     # This is decomposed into P(V|Disesase1)P(Disease1) + P(V|Disease2)P(Disease2) ... for every gene
-#     # To get P(V|Disease) from P(Disease|V), we note
-#     # P(D|V)P(V) = P(V|D)P(D), SO P(V|D) = P(D|V)*P(V) / P(D)
-#     # For every gene we have an allele frequency, P(V), sampled from the gamma distribution
-#     # And we calculate penetrance ( P(D|V) ) above using the mean effects for each genetic architecture
-#     # So now we need to multiple by P(V), and divide the result by P(D)
-#     # This gives our true population estimate
-#     #########################################################################################################
-#     pvd_base = torch.stack([pdvsNull, pdvsGeneAffects1, pdvsGeneAffects2, pdvsInBoth.T]).transpose(2, 0).transpose(1,2) / pDsWithBoth
-#     pvds = afs.unsqueeze(-1).unsqueeze(-1).expand(pvd_base.shape) * pvd_base
-    
-#     print("afs", afs)
-
-#     pis = tensor([1 - diseaseFractions.sum(), *diseaseFractions])
-#     categorySampler = Categorical(pis)
-#     categories  = categorySampler.sample([nGenes,])
-
-#     affectedGenes = []
-#     unaffectedGenes = []
-#     altCounts = []
-#     probs = []
-#     PVDs = []
-#     for geneIdx in range(nGenes):
-#         affects = categories[geneIdx]
-
-#         if affects == 0:
-#             unaffectedGenes.append(geneIdx)
-#         else:
-#             while affects - 1 >= len(affectedGenes):
-#                 affectedGenes.append([])
-#             affectedGenes[affects - 1].append(geneIdx)
-#         altCountsGene, p, pvnd, pvd = genAlleleCountFromPVDS(nCases = nCases, nCtrls = nCtrls, PVDs = pvds[geneIdx, affects], afMean = afs[geneIdx], pDs = pDsWithBoth)
-
-#         altCounts.append(altCountsGene.numpy())
-#         probs.append(p.numpy())
-#         PVDs.append([pvnd, *pvd])
-
-#     altCounts = tensor(altCounts)
-#     probs = tensor(probs)
-#     PVDs = tensor(PVDs)
-
-#     return {"altCounts": altCounts, "afs": probs, "categories": categories, "affectedGenes": affectedGenes, "unaffectedGenes": unaffectedGenes, "PDs": pDsWithBoth, "PVDs": PVDs}
