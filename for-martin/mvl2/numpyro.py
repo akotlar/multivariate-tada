@@ -1,20 +1,27 @@
-from typing import Any, Tuple
-import numpyro
-from numpyro.distributions import Multinomial, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky
-from jax import random
-from numpyro.infer import MCMC, NUTS
-import numpy as np
-import jax.numpy as jnp
-import jax
-import dill
+from typing import Any, Tuple, Optional
+
 import datetime
 import os
 import copy
 import multiprocessing
+import uuid
 
-numpyro.set_host_device_count(multiprocessing.cpu_count)
-numpyro.enable_x64()
+from jax import random
+import jax.numpy as jnp
+import jax
 
+
+import numpy as np
+import dill
+
+import numpyro
+from numpyro.distributions import Multinomial, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky
+from numpyro.infer import MCMC, NUTS, HMCECS, MixedHMC
+
+numpyro.set_host_device_count(multiprocessing.cpu_count())
+
+def set_platform(platform: str = "cpu") -> None:
+    numpyro.set_platform(platform)
 
 def get_pdhat(n_cases: np.array, n_ctrls: int):
     samplePDs = n_cases / (n_cases.sum() + n_ctrls)
@@ -89,12 +96,10 @@ def model_mvn(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: f
 
 
 def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str) -> MCMC:
-    mcmc = MCMC(
-        NUTS(model_to_run, max_tree_depth=max_tree_depth),
-        num_warmup=num_warmup, num_samples=num_samples,
-        jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method
-    )
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, hmcecs_blocks: Optional[int] = 0) -> MCMC:
+    kernel = NUTS(model_to_run)
+
+    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method)
     mcmc.run(random.PRNGKey(12269), data, n_cases, n_ctrls, max_K)
     mcmc.print_summary()
     return mcmc
@@ -116,8 +121,8 @@ def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
 def run(sim_data, run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
     mcmc = infer(**run_params)
     inferred_params = get_inferred_params(mcmc)
-
-    folder = datetime.datetime.now().strftime('%h-%d-%y-%H-%M-%S')
+    suffix = uuid.uuid4()
+    folder = datetime.datetime.now().strftime('%h-%d-%y-%H-%M-%S') + f"_{suffix}"
     if folder_prefix:
         folder = f"{folder_prefix}_{folder}"
 
@@ -157,3 +162,15 @@ def select_components(weights: np.array, threshold: float = .01):
             accepted_weight_stds.append(float(weight_stds[i]))
 
     return {"mean": accepted_weight_means, "std": accepted_weight_stds, "indices": accepted_indices}
+
+def get_run_params_data(folder: str) -> Tuple[dict, dict]:
+    run_params = None
+    with open(os.path.join(folder, "run_params.pickle"), 'rb') as file:
+        run_params = dill.load(file)
+
+    sim_data = None
+    with open(os.path.join(folder, "sim_data.pickle"), 'rb') as file:
+        sim_data = dill.load(file)
+        
+    return run_params, sim_data
+

@@ -745,12 +745,23 @@ def v6normal(nCases: Tensor, nCtrls: Tensor, pDs = tensor([.01, .01, .002]), pNo
 # nor in thresh1 or thresh2
 # To get this right, PD1 and PD2 would need to be sampled from a MVN with
 # some mean (maybe PD1 and PD2) and some residual covariance
+from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
+from torch import Tensor
+import numpy as np
+from scipy.stats import multivariate_normal as scimvn
+
+class WrappedMVN():
+    def __init__(self, mvn: MVN):
+        self.mvn = mvn
+        self.scimvn = scimvn(mean=self.mvn.mean, cov=self.mvn.covariance_matrix)
+
+    def cdf(self, lower: Tensor):
+        l = lower.expand(self.mvn.mean.shape)
+        return self.scimvn.cdf(l)
+
 def v6liability(nCases, nCtrls, pDs = tensor([.01, .01]), diseaseFractions = tensor([.05, .05, .01]), rrMeans = tensor([3, 5]), afMean = tensor(1e-4), afShape = tensor(50.), nGenes=20000,
              meanEffectCovarianceScale=tensor(.01), covShared=tensor([ [1, .5], [.5, 1]]), covSingle = tensor([ [1, .2], [.2, 1]]), **kwargs):
-    from torch.distributions import MultivariateNormal as MVN, Categorical, Normal as N
-    from torch import Tensor
-    import numpy as np
-    from mvl.mvn import WrappedMVN
+
 
     residualCovariance = covSingle
 
