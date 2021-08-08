@@ -1,0 +1,29 @@
+
+ Disorder 0 has a prev = 0.02 and thres = 2.0541885887219 
+
+ Disorder 1 has a prev = 0.02 and thres = 2.0541885887219 
+
+ h2[0] = 0.4  h2[1] =0.4   rho = 0.2 
+
+ Stupid_sum[0] = 3.46277162499575e-09   and stupid_sum[1] = 6.6789733743633e-09 
+
+ Before normalization total variances were 0.43846576668597 and 0.427919218189504 
+
+Normalizing by 0.955129260584926
+
+ For disorder 0 we expected a prevalence of 0.02 and got 0.030245 with 6049 out of 200000
+
+ Genetic mean liability  = -8.43822789420301e-16 Genetic Variance in Liabilty = 0.438739481475623
+ Residual mean liability  = 0.000928069612956423 Residual Variance in Liabilty = 0.657586784606093
+ Total mean liability  = 2.43589037829395e-16 Total Variance in Liabilty = 1.00228961944318
+
+Normalizing by 0.966827734116276
+
+ For disorder 1 we expected a prevalence of 0.02 and got 0.03014 with 6028 out of 200000
+
+ Genetic mean liability  = -2.64632760149652e-15 Genetic Variance in Liabilty = 0.428234016310301
+ Residual mean liability  = -0.00041295677529835 Residual Variance in Liabilty = 0.640975636166714
+ Total mean liability  = 2.44205766719574e-15 Total Variance in Liabilty = 1.00038395524243
+
+
+Final Observed Prevalences for this study are (Disorder1,Disorder2,Both) = 0.030245,0.03014,0.00399

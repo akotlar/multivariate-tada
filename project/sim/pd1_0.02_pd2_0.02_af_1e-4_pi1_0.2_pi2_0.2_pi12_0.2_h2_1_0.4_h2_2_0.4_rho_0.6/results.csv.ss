@@ -1,0 +1,31 @@
+Args are: Prev_Disorder1,Prev_Disorder2,Sample_Size,No_Genes,Mean_Rare_Freq_Per_Gene,FractionGenes1_only,FractionGenes2_only,FractionBoth,Rare_h2_1,rare_h2_2,rho,outfile
+Args val: 0.02,0.02,200000,20000,0.0001,0.2,0.2,0.2,0.4,0.4,0.6,pd1_0.02_pd2_0.02_af_1e-4_pi1_0.2_pi2_0.2_pi12_0.2_h2_1_0.4_h2_2_0.4_rho_0.6/results.csv
+
+ Disorder 0 has a prev = 0.02 and thres = 2.0541885887219 
+
+ Disorder 1 has a prev = 0.02 and thres = 2.0541885887219 
+
+ h2[0] = 0.4  h2[1] =0.4   rho = 0.6 
+
+ Stupid_sum[0] = -2.06821115789069e-08   and stupid_sum[1] = -6.7456362717877e-09 
+
+ Before normalization total variances were 1.6852284676354 and 1.64755911191993 
+
+Normalizing by 0.487192509256411
+
+ For disorder 0 we expected a prevalence of 0.02 and got 0.024845 with 4969 out of 200000
+
+ Genetic mean liability  = 3.61042307162052e-16 Genetic Variance in Liabilty = 1.68035321234702
+ Residual mean liability  = 0.00348329620556959 Residual Variance in Liabilty = 2.53330978173926
+ Total mean liability  = -4.57133775277896e-16 Total Variance in Liabilty = 0.995523295638775
+
+Normalizing by 0.492730553390116
+
+ For disorder 1 we expected a prevalence of 0.02 and got 0.025245 with 5049 out of 200000
+
+ Genetic mean liability  = 5.29910559876612e-16 Genetic Variance in Liabilty = 1.64218418138306
+ Residual mean liability  = -0.00158390626631689 Residual Variance in Liabilty = 2.47166238308775
+ Total mean liability  = 2.51761944625173e-16 Total Variance in Liabilty = 0.994643770257713
+
+
+Final Observed Prevalences for this study are (Disorder1,Disorder2,Both) = 0.024845,0.025245,0.002385

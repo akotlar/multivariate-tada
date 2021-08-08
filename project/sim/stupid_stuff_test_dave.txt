@@ -1,0 +1,29 @@
+(base) akotlar@akotlar-System-Product-Name:~/tada/project/sim$ perl this_perl_program.pl  .02 .02 200000 20000 .0001 .1 .1 .05 .5 .5 .2 test_dave.csv
+
+ Disorder 0 has a prev = 0.02 and thres = 2.0541885887219 
+
+ Disorder 1 has a prev = 0.02 and thres = 2.0541885887219 
+
+ h2[0] = 0.5  h2[1] =0.5   rho = 0.2 
+
+
+
+ Stupid_sum[0] = 3.04126945849248e-10   and stupid_sum[1] = 4.31723989890997e-10 
+
+ Before normalization total variances were 0.638839467627211 and 0.608294438634139 
+
+Normalizing by 0.884685955040242
+
+ For disorder 0 we expected a prevalence of 0.02 and got 0.031715 with 6343 out of 200000
+
+ Genetic mean liability  = -7.73803798814754e-16 Genetic Variance in Liabilty = 0.639038760370541
+ Residual mean liability  = 0.00410813164028204 Residual Variance in Liabilty = 0.639791956825745
+ Total mean liability  = 1.07006181693237e-15 Total Variance in Liabilty = 1.00290363324835
+
+Normalizing by 0.90662581152343
+
+ For disorder 1 we expected a prevalence of 0.02 and got 0.03191 with 6382 out of 200000
+
+ Genetic mean liability  = 6.06272809733355e-16 Genetic Variance in Liabilty = 0.612351666157797
+ Residual mean liability  = 0.00100918957629964 Residual Variance in Liabilty = 0.607712445077606
+ Total mean liability  = -7.03809233115749e-16 Total Variance in Liabilty = 1.00305917820865
