@@ -5,6 +5,7 @@ import os
 import copy
 import multiprocessing
 import uuid
+from typing import List
 
 from jax import random
 from jax.nn import softmax
@@ -16,7 +17,8 @@ import numpy as np
 import dill
 
 import numpyro
-from numpyro.distributions import Multinomial, Normal, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky
+from numpyro.distributions import Multinomial, Normal, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky, DirichletMultinomial
+from numpyro.distributions.continuous import Uniform
 from numpyro.infer import MCMC, NUTS, HMCECS, MixedHMC
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
@@ -52,6 +54,19 @@ def mix_weights(beta: jnp.array):
 # parent of origin would be important
 
 
+def model_conjugate(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
+
+    pd_hat = get_pdhat(n_cases, n_ctrls)
+    # numpyro.param('concentration', pd_hat)
+    with numpyro.plate("prob_plate", k_hypotheses):
+        probs = numpyro.deterministic("probs", Uniform(pd_hat).to_event(1))
+
+    with numpyro.plate("data", data.shape[0]):
+        z = numpyro.sample("z", Categorical(mix_weights(beta)))
+        return numpyro.sample("obs", DirichletMultinomial(concentration=probs[z]), obs=data)
+
 def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
@@ -69,16 +84,14 @@ def model_mvn(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: f
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
-    means = numpyro.param("effect_means", get_pdhat(n_cases, n_ctrls))
+    # means = numpyro.param("effect_means", get_pdhat(n_cases, n_ctrls))
     # z_scores = 
     with numpyro.plate("prob_plate", k_hypotheses):
-        probs = numpyro.sample("effects", MultivariateNormal(Normal(0,1).icdf(np.array(means)), 1.))
+        probs = numpyro.sample("effects", MultivariateNormal(0., 1.))
 
     with numpyro.plate("data", data.shape[0]):
         z = numpyro.sample("z", Categorical(mix_weights(beta)))
-        print("probs[z]", probs[z])
-        print("softmax probs[z]", softmax(probs[z], 1))
-        return numpyro.sample("obs", Multinomial(probs=softmax(probs[z]), obs=data))
+        return numpyro.sample("obs", Multinomial(probs=softmax(probs[z])), obs=data)
 
 # WIP Probably not working yet
 
@@ -134,11 +147,14 @@ def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_t
 
 def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
     posterior_samples = mcmc.get_samples()
-
+    print(posterior_samples)
     beta = posterior_samples['beta']
 
+    # if 'effects' in posterior_samples:
+    #     probs = softmax(posterior_samples["probs"])
+
     weights = mix_weights(beta)
-    print("probs mean", posterior_samples["probs"].mean(0))
+    # print("probs mean", posterior_samples["probs"].mean(0))
     print("inferred stick-breaking weights mean: ", weights.mean(0))
     print("inferred stick-breaking weights stdd: ", weights.std(0))
 
@@ -173,6 +189,25 @@ def run(sim_data, run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
         dill.dump(run_params, f)
 
     return mcmc, inferred_params
+
+def read_shit(path) -> List[float]:
+    prevalences = None
+    headers = None
+    params = []
+    with open(path, 'r') as f:
+        for line in f:
+            if line.startswith('Args are: '):
+                headers = line.strip().split('Args are: ')[1].split(',')
+            elif line.startswith('Args val: '):
+                for val in line.strip().split('Args val: ')[1].split(','):
+                    try:
+                        params.append(float(val))
+                    except:
+                        params.append(val)
+            elif line.startswith('Final Observed Prevalences for this study are (Disorder1,Disorder2,Both) = '):
+                prevalences = list(map(float, line.split('Final Observed Prevalences for this study are (Disorder1,Disorder2,Both) = ')[1].strip().split(',')))
+
+    return prevalences, dict(zip(headers, params))
 
 def select_components(weights: np.array, threshold: float = .01):
     accepted_indices = []
