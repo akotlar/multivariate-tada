@@ -8,7 +8,7 @@ from scipy.stats import multivariate_normal as scimvn
 import numpy as np
 import torch
 from typing import Dict, Tuple, Any, Optional
-    
+
 class WrappedMVN():
     def __init__(self, mvn: MultivariateNormal):
         self.mvn = mvn

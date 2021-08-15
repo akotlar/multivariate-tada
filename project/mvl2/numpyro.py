@@ -12,7 +12,6 @@ from jax.nn import softmax
 import jax.numpy as jnp
 import jax
 
-
 import numpy as np
 import dill
 
