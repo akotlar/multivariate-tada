@@ -76,6 +76,7 @@ my @sigma;
 my @mu;
 
 my $lambda = 2*$Tot_N * $Freq_P;
+print "Lambda is $lambda, N is $Tot_N, P is $Freq_P";
 $sigma[0] = 0.25;
 $mu[0] = 1.0;
 $mu[1] = 1.0;
@@ -85,7 +86,11 @@ if($rho < 0.9999999999)
 {
 	$nu = sqrt(1.0 - $rho*$rho) * $sigma[1]*$sigma[1];
 }
+
+print "\nrho is $rho, nu is $nu";
 my $lam = ($sigma[1] / $sigma[0]) * $rho;
+print "\nLambda is $lam, sigma[1] is $sigma[1], sigma[0] is $sigma[0], rho is $rho";
+
 my @stupid_sum;
 
 for(my $i = 0; $i < $Tot_G; $i++)

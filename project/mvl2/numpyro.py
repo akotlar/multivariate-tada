@@ -14,13 +14,17 @@ import jax
 
 import numpy as np
 import dill
+import random as pyrandom
 
 import numpyro
 from numpyro.distributions import Multinomial, Normal, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky, DirichletMultinomial
 from numpyro.distributions.continuous import Uniform
 from numpyro.infer import MCMC, NUTS, HMCECS, MixedHMC
+from numpyro.contrib.funsor.infer_util import config_enumerate
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
+numpyro.enable_x64(True)
+numpyro.set_platform("gpu")
 
 def set_platform(platform: str = "cpu") -> None:
     numpyro.set_platform(platform)
@@ -43,6 +47,12 @@ def get_expected_K(sampleCategories: int):
     # which is 4 + 4choose2 + nchoose3  + nchoose4
     pass
 
+def get_weights_from_mcmc_samples_beta(beta: jnp.array):
+    weights = []
+    for b in beta:
+        weights.append(mix_weights(b))
+
+    return np.array(weights)
 
 def mix_weights(beta: jnp.array):
     beta_cumprod = (1 - beta).cumprod(-1)
@@ -60,11 +70,14 @@ def model_conjugate(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, al
     pd_hat = get_pdhat(n_cases, n_ctrls)
     # numpyro.param('concentration', pd_hat)
     with numpyro.plate("prob_plate", k_hypotheses):
-        probs = numpyro.deterministic("probs", Uniform(pd_hat).to_event(1))
+        concentrations = numpyro.sample("concentrations", Uniform(pd_hat).to_event(1))
+        probs = numpyro.sample("probs", Dirichlet(concentrations))
 
     with numpyro.plate("data", data.shape[0]):
         z = numpyro.sample("z", Categorical(mix_weights(beta)))
-        return numpyro.sample("obs", DirichletMultinomial(concentration=probs[z]), obs=data)
+        # print("concentrations[z]", Dirichlet(concentrations[z]).sample())
+
+        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
     with numpyro.plate("beta_plate", k_hypotheses-1):
@@ -75,8 +88,20 @@ def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float
         probs = numpyro.sample("probs", Dirichlet(pd_hat))
 
     with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)))
-        # print("probs[z]", probs[z])
+        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
+        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
+
+@config_enumerate
+def model_enumerate(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
+
+    pd_hat = get_pdhat(n_cases, n_ctrls)
+    with numpyro.plate("prob_plate", k_hypotheses):
+        probs = numpyro.sample("probs", Dirichlet(pd_hat))
+
+    with numpyro.plate("data", data.shape[0]):
+        z = numpyro.sample("z", Categorical(mix_weights(beta)).mask(False))
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 def model_mvn(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
@@ -135,11 +160,15 @@ def model_mvn1(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: 
 
 
 def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, hmcecs_blocks: Optional[int] = 0) -> MCMC:
-    kernel = NUTS(model_to_run)
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, hmcecs_blocks: Optional[int] = 0, alpha=.05,
+          random_seed: int = 12269, random_key: random.KeyArray = None) -> MCMC:
+    kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob)
+
+    if not random_key:
+        random_key=random.PRNGKey(random_seed)
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method)
-    mcmc.run(random.PRNGKey(12269), data, n_cases, n_ctrls, max_K)
+    mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha)
     mcmc.print_summary()
     return mcmc
 
