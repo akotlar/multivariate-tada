@@ -14,7 +14,6 @@ import jax
 
 import numpy as np
 import dill
-import random as pyrandom
 
 import numpyro
 from numpyro.distributions import Multinomial, Normal, Beta, Dirichlet, Beta, Categorical, MultivariateNormal, Exponential, HalfCauchy, LKJCholesky, DirichletMultinomial
@@ -23,7 +22,7 @@ from numpyro.infer import MCMC, NUTS, HMCECS, MixedHMC
 from numpyro.contrib.funsor.infer_util import config_enumerate
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
-numpyro.enable_x64(True)
+#numpyro.enable_x64(True)
 numpyro.set_platform("gpu")
 
 def set_platform(platform: str = "cpu") -> None:
@@ -54,9 +53,17 @@ def get_weights_from_mcmc_samples_beta(beta: jnp.array):
 
     return np.array(weights)
 
-def mix_weights(beta: jnp.array):
+def mix_weights_one_chain(beta: jnp.array):
     beta_cumprod = (1 - beta).cumprod(-1)
     return jnp.pad(beta, (0, 1), constant_values=1) * jnp.pad(beta_cumprod, (1, 0), constant_values=1)
+
+def mix_weights(beta: jnp.array):
+    # multiple chains
+    if len(beta.shape) == 3:
+        return jnp.stack(list(mix_weights_one_chain(beta[i]) for i in range(beta.shape[0])))
+    else:
+        return mix_weights_one_chain(beta)
+    
 
 # Covariates needed
 # Sex of the individual
@@ -159,16 +166,12 @@ def model_mvn1(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: 
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 
-def infer(model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, hmcecs_blocks: Optional[int] = 0, alpha=.05,
-          random_seed: int = 12269, random_key: random.KeyArray = None) -> MCMC:
+def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, hmcecs_blocks: Optional[int] = 0, alpha=.05, extra_fields = ()) -> MCMC:
     kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob)
 
-    if not random_key:
-        random_key=random.PRNGKey(random_seed)
-
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method)
-    mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha)
+    mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha, extra_fields=extra_fields)
     mcmc.print_summary()
     return mcmc
 
@@ -189,8 +192,8 @@ def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
     return posterior_samples, weights
 
 
-def run(sim_data, run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
-    mcmc = infer(**run_params)
+def run(random_key, sim_data, run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
+    mcmc = infer(random_key, **run_params)
     inferred_params = get_inferred_params(mcmc)
     suffix = uuid.uuid4()
     folder = datetime.datetime.now().strftime('%h-%d-%y-%H-%M-%S') + f"_{suffix}"
