@@ -21,6 +21,8 @@ from numpyro.contrib.funsor.infer_util import config_enumerate
 
 import pandas as pd
 
+import sigfig
+
 numpyro.set_host_device_count(multiprocessing.cpu_count())
 
 def set_platform(platform: Literal["cpu", "gpu", "tpu"] = "cpu") -> None:
@@ -44,10 +46,10 @@ def mix_weights_one_chain(beta: jnp.array):
 
 def mix_weights(beta: jnp.array):
     # multiple chains
-    if len(beta.shape) == 3:
+    if len(beta.shape) > 1:
         return jnp.stack(list(mix_weights_one_chain(beta[i]) for i in range(beta.shape[0])))
-    else:
-        return mix_weights_one_chain(beta)
+    
+    return mix_weights_one_chain(beta)
     
 
 # Covariates needed
@@ -341,6 +343,9 @@ def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
 
     return posterior_samples, weights
 
+@np.vectorize
+def round_it(x, sig_figs:int = 2):
+    return sigfig.round(x, sig_figs)
 
 def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
     mcmc = infer(random_key, **run_params)
@@ -421,11 +426,9 @@ def select_best_chain(runs_mcmc):
 
 def get_parameters(mcmc_run: MCMC):
     posterior_probs = mcmc_run.get_samples()
-    probs = posterior_probs['probs']
     weights = np.array(mix_weights(posterior_probs['beta']))
-    dirichlet_concentrations = posterior_probs.get('dirichlet_concentration')
 
-    return probs, weights, dirichlet_concentrations
+    return posterior_probs['probs'], weights, posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
 
 # this will only work for well-separated values
 # instead, we should be ordering by both probs and weight, maybe likelihood?
@@ -441,7 +444,7 @@ def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None):
         make_order = True
 
     for mr in runs_mcmc:
-        probs, weights, dirichlet_concentrations = get_parameters(mr)
+        probs, weights, beta, dirichlet_concentrations = get_parameters(mr)
 
         if make_order:
             order = np.argsort(weights.mean(0))[::-1]
