@@ -398,8 +398,8 @@ def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptan
 
     return accepted
 
-# TODO: improve selection criteria by adding n_eff mean/std and improve potential_energy use
-def select_best_chain(runs_mcmc): # criteria: List[Tuple[str, bool]]
+# TODO: improve selection criteria by adding n_eff mean/std, r_hat mean/std, and improve potential_energy use
+def select_best_chain(runs_mcmc):
     """
     critera: List[Tuple[str, bool]]
       The key, value pair. Values are boolean; True indicates prefer maximum (descending sort)
