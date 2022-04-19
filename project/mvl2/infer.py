@@ -9,6 +9,7 @@ from typing import List
 
 import dill
 
+import jax
 from jax import random
 from jax.nn import softmax
 import jax.numpy as jnp
@@ -332,11 +333,8 @@ def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
     print(posterior_samples)
     beta = posterior_samples['beta']
 
-    # if 'effects' in posterior_samples:
-    #     probs = softmax(posterior_samples["probs"])
-
     weights = mix_weights(beta)
-    # print("probs mean", posterior_samples["probs"].mean(0))
+
     print("inferred stick-breaking weights mean: ", weights.mean(0))
     print("inferred stick-breaking weights stdd: ", weights.std(0))
 
@@ -400,59 +398,72 @@ def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptan
     return accepted
 
 # TODO: make generic in sample site names
+@jax.jit
 def ordered_statistics(runs_mcmc, order: Iterable[int] = None): 
     # Simple ordering procedure
     # We'll modify this to not argsort, but instead permute and maximize likelihood
     all_weights_ordered = []
+    all_beta_ordered = []
     all_probs_ordered = []
     dirichlet_concentrations = []
+
+    make_order = False
+    if order is None:
+        make_order = True
 
     for mr in runs_mcmc:
         posterior_probs = mr.get_samples()
         probs = posterior_probs['probs']
-        # betas = posterior_probs['beta']
+        betas = posterior_probs['beta']
         weights = np.array(mix_weights(posterior_probs['beta']))
 
         probs_ordered = []
         weights_ordered = []
+        betas_ordered = []
 
-        if order is None:
+        if make_order:
             order = np.argsort(weights.mean(0))[::-1]
 
-        for prob_mcmc_sample in probs:
-            probs_ordered.append(prob_mcmc_sample[order])
+        print("order", order)
 
-        for weight in weights:
-            weights_ordered.append(weight[order])
+        for prob_chain in probs:
+            probs_ordered.append(np.array(prob_chain[order]))
+
+        for weight_chain in weights:
+            weights_ordered.append(np.array(weight_chain[order]))
+
+        for beta_chain in betas:
+            betas_ordered.append(np.array(beta_chain[order]))
 
         weights_ordered = np.array(weights_ordered)
         probs_ordered = np.array(probs_ordered)
 
         all_weights_ordered.append(weights_ordered)
         all_probs_ordered.append(probs_ordered)
+        all_beta_ordered.append(betas_ordered)
 
         if 'dirichlet_concentration' in posterior_probs:
             concentration_ordered = []
-            for conc_sample in posterior_probs['dirichlet_concentration']:
-                concentration_ordered.append(conc_sample[order])
+            for conc_chain in posterior_probs['dirichlet_concentration']:
+                concentration_ordered.append(np.array(conc_chain[order]))
             dirichlet_concentrations.append(np.array(concentration_ordered))
 
-    all_weights_ordered = jnp.stack(all_weights_ordered)
-    all_probs_ordered = jnp.stack(all_probs_ordered)
+    all_weights_ordered = np.stack(all_weights_ordered)
+    all_probs_ordered = np.stack(all_probs_ordered)
+    all_beta_ordered = np.stack(all_beta_ordered)
 
     if not dirichlet_concentrations:
         dirichlet_concentrations = None
     else:
-        dirichlet_concentrations = jnp.stack(dirichlet_concentrations)
+        dirichlet_concentrations = np.stack(dirichlet_concentrations)
 
-    return all_weights_ordered, all_probs_ordered, dirichlet_concentrations
+    return all_weights_ordered, all_probs_ordered, all_beta_ordered, dirichlet_concentrations
 
 def get_statistics_permutations(runs_mcmc, K=4):
     # K is the number of components
     # we will have 1 weight per component
     # and each component will have a likelihood array, so probability array will be K x n_sample_categories
     for order in permutations(K):
-        print("order", order)
         yield ordered_statistics(runs_mcmc, order)
 
 # def order_by_maximum_likelihood_ratio(runs_mcmc):
