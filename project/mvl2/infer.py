@@ -9,7 +9,6 @@ from typing import List
 
 import dill
 
-import jax
 from jax import random
 from jax.nn import softmax
 import jax.numpy as jnp
@@ -19,6 +18,8 @@ import numpyro
 from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
 from numpyro.contrib.funsor.infer_util import config_enumerate
+
+import pandas as pd
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
 
@@ -397,67 +398,79 @@ def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptan
 
     return accepted
 
-# TODO: make generic in sample site names
-@jax.jit
-def ordered_statistics(runs_mcmc, order: Iterable[int] = None): 
+# TODO: improve selection criteria by adding n_eff mean/std and improve potential_energy use
+def select_best_chain(runs_mcmc): # criteria: List[Tuple[str, bool]]
+    """
+    critera: List[Tuple[str, bool]]
+      The key, value pair. Values are boolean; True indicates prefer maximum (descending sort)
+    """
+    
+    res = []
+    for i, run in enumerate(runs_mcmc):
+        fields = run.get_extra_fields()
+        diverging = np.count_nonzero(fields['diverging'])
+        accept_prob = fields['accept_prob']
+        accept_prob_mean = accept_prob.mean()
+        accept_prob_std = accept_prob.std()
+        potential_energy = fields['potential_energy'][-1]
+
+        res.append(np.array([diverging, accept_prob_mean, accept_prob_std, potential_energy, i]))
+
+    res = pd.DataFrame(res, columns=['diverging', 'accept_prob_mean', 'accept_prob_std', 'potential_energy', 'mcmc_index'])
+    res = res.sort_values(by=['diverging', 'accept_prob_mean', 'accept_prob_std', 'potential_energy'], ascending=[True, False, True, True])
+
+    best_index = res.loc[0,'mcmc_index']
+
+    return runs_mcmc[int(best_index)], res
+
+def get_parameters(mcmc_run: MCMC):
+    posterior_probs = mcmc_run.get_samples()
+    probs = posterior_probs['probs']
+    weights = np.array(mix_weights(posterior_probs['beta']))
+    dirichlet_concentrations = posterior_probs.get('dirichlet_concentration')
+
+    return probs, weights, dirichlet_concentrations
+
+# this will only work for well-separated values
+# instead, we should be ordering by both probs and weight, maybe likelihood?
+def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None): 
     # Simple ordering procedure
     # We'll modify this to not argsort, but instead permute and maximize likelihood
     all_weights_ordered = []
-    all_beta_ordered = []
     all_probs_ordered = []
-    dirichlet_concentrations = []
+    all_dirichlet_concentrations = []
 
     make_order = False
     if order is None:
         make_order = True
 
     for mr in runs_mcmc:
-        posterior_probs = mr.get_samples()
-        probs = posterior_probs['probs']
-        betas = posterior_probs['beta']
-        weights = np.array(mix_weights(posterior_probs['beta']))
-
-        probs_ordered = []
-        weights_ordered = []
-        betas_ordered = []
+        probs, weights, dirichlet_concentrations = get_parameters(mr)
 
         if make_order:
             order = np.argsort(weights.mean(0))[::-1]
 
-        print("order", order)
-
-        for prob_chain in probs:
-            probs_ordered.append(np.array(prob_chain[order]))
-
-        for weight_chain in weights:
-            weights_ordered.append(np.array(weight_chain[order]))
-
-        for beta_chain in betas:
-            betas_ordered.append(np.array(beta_chain[order]))
-
-        weights_ordered = np.array(weights_ordered)
-        probs_ordered = np.array(probs_ordered)
+        weights_ordered = np.take_along_axis(weights, np.expand_dims(order, axis=(0)), axis=1)
+        probs_ordered = np.take_along_axis(probs, np.swapaxes(np.expand_dims(order, axis=(0, 1)), 2, 1), axis=1)
 
         all_weights_ordered.append(weights_ordered)
         all_probs_ordered.append(probs_ordered)
-        all_beta_ordered.append(betas_ordered)
 
-        if 'dirichlet_concentration' in posterior_probs:
-            concentration_ordered = []
-            for conc_chain in posterior_probs['dirichlet_concentration']:
-                concentration_ordered.append(np.array(conc_chain[order]))
-            dirichlet_concentrations.append(np.array(concentration_ordered))
+        if isinstance(dirichlet_concentrations, np.ndarray) and dirichlet_concentrations.size > 0:
+            conc_ordered = np.take_along_axis(dirichlet_concentrations, np.expand_dims(order, axis=(0)), axis=1)
+            all_dirichlet_concentrations.append(np.array(conc_ordered))
 
     all_weights_ordered = np.stack(all_weights_ordered)
     all_probs_ordered = np.stack(all_probs_ordered)
-    all_beta_ordered = np.stack(all_beta_ordered)
 
-    if not dirichlet_concentrations:
-        dirichlet_concentrations = None
+    if not all_dirichlet_concentrations:
+        all_dirichlet_concentrations = None
     else:
-        dirichlet_concentrations = np.stack(dirichlet_concentrations)
+        all_dirichlet_concentrations = np.stack(all_dirichlet_concentrations)
 
-    return all_weights_ordered, all_probs_ordered, all_beta_ordered, dirichlet_concentrations
+    return all_weights_ordered, all_probs_ordered, all_dirichlet_concentrations
+
+
 
 def get_statistics_permutations(runs_mcmc, K=4):
     # K is the number of components
