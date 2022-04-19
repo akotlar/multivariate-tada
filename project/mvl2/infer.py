@@ -373,12 +373,8 @@ def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str 
 
     return mcmc, inferred_params
 
-# TODO: implement pmap version that uses a chunk size that is the jax.device_count()
-# rkeys= random.split(random_key, 4)
-# kernel = NUTS(model=model, target_accept_prob=.8)
-# mcmc = MCMC(kernel, num_warmup=2000, num_samples=4000, jit_model_args=False, chain_method='sequential', progress_bar=False)
-
-# res = vmap(lambda rkey: mcmc.run(random_key, stat_data_dave, n_cases, n_ctrls, 4, .05))(rkeys)
+# TODO: should this be using 'mean_accept_prob' to test against acceptance_threshold?
+# accept_prob gives higher variances, means appear very similar, but are there pathological cases?
 def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptance_threshold=.7, max_attempts=10):
     """
         May return more than target_number_of_chains when in parallel mode
