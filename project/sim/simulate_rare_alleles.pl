@@ -3,9 +3,11 @@ use IO::Zlib;
 use strict vars;
 use Math::Random qw(:all);
 use Math::Gauss ':all';
+use DDP;
 
 use vars qw(@fields @mom @dad @kid $npar);
 
+my %stats;
 if(@ARGV != 12) 
 {
 	print "\n Usage: ${0} Prev_Disorder1 Prev_Disorder2 Sample_Size No_Genes Mean_Rare_Freq_Per_Gene FractionGenes1_only FractionGenes2_only FractionBoth Rare_h2_1 rare_h2_2 rho outfile \n\n "; 
@@ -16,7 +18,7 @@ open(FILE_SS,">$ARGV[11].ss") || die "\n Can not open $ARGV[11].ss for writing \
 
 open(FILE_SS,">$ARGV[11].ss") || die "\n Can not open $ARGV[11].ss for writing \n";
 print FILE_SS "Args are: " . "Prev_Disorder1,Prev_Disorder2,Sample_Size,No_Genes,Mean_Rare_Freq_Per_Gene,FractionGenes1_only,FractionGenes2_only,FractionBoth,Rare_h2_1,rare_h2_2,rho,outfile\n";
-print FILE_SS "Args val: " . join(",", @ARGV) . "\n";
+print FILE_SS "Args val: " . join(" ", @ARGV) . "\n";
 
 my @prev;
 my @thres;
@@ -76,7 +78,7 @@ my @sigma;
 my @mu;
 
 my $lambda = 2*$Tot_N * $Freq_P;
-print "Lambda is $lambda, N is $Tot_N, P is $Freq_P";
+print "\nLambda is $lambda, N is $Tot_N, P is $Freq_P";
 $sigma[0] = 0.25;
 $mu[0] = 1.0;
 $mu[1] = 1.0;
@@ -84,6 +86,8 @@ $sigma[1] = 0.25;
 my $nu = 0.0; 
 if($rho < 0.9999999999)
 {
+	# residual sum of squares = residual variance * variance = (1 - r^2) * variance_x , where r is genetic correlation
+	# https://en.wikipedia.org/wiki/Residual_sum_of_squares
 	$nu = sqrt(1.0 - $rho*$rho) * $sigma[1]*$sigma[1];
 }
 
@@ -97,6 +101,7 @@ for(my $i = 0; $i < $Tot_G; $i++)
 {
 	# Choose the number of rare allele carriers $this_c and then who they are $rare_allele_carriers[$i][1..$this_c] 
 	my $this_c = random_poisson(1,$lambda);
+	say STDERR "number of rare alleles is $this_c";
 	$rare_allele_carriers[$i][0] = $this_c;
 	# print "\n For i = $i we have lambda = $lambda  Totala count $this_c \n";
 	my @this_stupid;
@@ -105,6 +110,7 @@ for(my $i = 0; $i < $Tot_G; $i++)
 	if($this_c > 0)
 	{
 		my @temp = random_uniform_integer($this_c,0,$Tot_N-1);
+		p @temp;
 		for(my $j = 1; $j <=$this_c;$j++)
 		{
 			$rare_allele_carriers[$i][$j] = $temp[$j-1];
@@ -115,6 +121,7 @@ for(my $i = 0; $i < $Tot_G; $i++)
 			# print "\n Found person $temp[$j-1]";
 		}
 		my $temp = random_uniform();
+		say "random_uniform_temp is $temp"
 		if($temp > 1.0 - $model_p[3])
 		{
 			# Both diseases affected;
@@ -268,7 +275,7 @@ print FILE_SS "\n\nFinal Observed Prevalences for this study are (Disorder1,Diso
 open(FILE,">$ARGV[11]") || die "\n Can not open $ARGV[11] for writing \n";
 print FILE "Per_Gene_Counts_Unaffected_Unaffected,Unaffected_Affected,Affected_Unaffected,Affected_Affected\n";
 
-
+p @rare_allele_carriers;
 for(my $i = 0; $i < $Tot_G; $i++)
 {
 	my @aff_c;

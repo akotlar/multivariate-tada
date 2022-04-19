@@ -4,7 +4,7 @@ use strict vars;
 use Math::Random qw(:all);
 use Math::Gauss ':all';
 use vars qw(@fields @mom @dad @kid $npar);
-
+say STDERR "IN";
 if(@ARGV > 13) 
 {
 	print "\n Usage: ${0} Prev_Disorder1 Prev_Disorder2 Sample_Size No_Genes Mean_Rare_Freq_Per_Gene FractionGenes1_only FractionGenes2_only FractionBoth Rare_h2_1 rare_h2_2 rho outfile rho_p \n\n "; 
@@ -20,7 +20,7 @@ random_set_seed(@seed);
 
 open(FILE_SS,">$ARGV[11].ss") || die "\n Can not open $ARGV[11].ss for writing \n";
 print join(",", @ARGV);
-exit;
+
 print FILE_SS "Args are: " . join(",", @ARGV);
 
 for(my $i = 0 ; $i < 2; $i++)
