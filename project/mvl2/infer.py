@@ -428,7 +428,30 @@ def get_parameters(mcmc_run: MCMC):
     posterior_probs = mcmc_run.get_samples()
     weights = np.array(mix_weights(posterior_probs['beta']))
 
-    return posterior_probs['probs'], weights, posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
+    return weights, posterior_probs['probs'], posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
+
+# TODO: Is it safe to assume hypotheses correspond to maximizing penetrance?
+def get_assumed_order_for_2(probs, weights):
+    """
+    Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
+    """
+    hypotheses = {}
+
+    probs_mean_rounded = round_it(probs.mean(0))
+    probs_mean_rounded_df = pd.DataFrame(probs_mean_rounded, columns=['P(~D|V,H)', 'P(D1|V,H)', 'P(D2|V,H)', 'P(D12|V,H)'])
+
+    h0 = probs_mean_rounded_df['P(~D|V,H)'].idxmax()
+    hypotheses[h0] = 'H0'
+    h1 = (probs_mean_rounded_df['P(D1|V,H)'] - probs_mean_rounded_df['P(D2|V,H)']).idxmax() #(case1 > case2)
+    hypotheses[h1] = 'H1'
+    h2 = (probs_mean_rounded_df['P(D2|V,H)'] - probs_mean_rounded_df['P(D1|V,H)']).idxmax() #(case2 > case1)
+    hypotheses[h2] = 'H2'
+    h12 = (probs_mean_rounded_df['P(D12|V,H)']).idxmax()
+    hypotheses[h12] = 'H12'
+
+    probs_mean_rounded_df.index = [hypotheses[k] for k in sorted(hypotheses.keys())]
+    
+    return h0, h1, h2, h12, probs_mean_rounded_df
 
 # this will only work for well-separated values
 # instead, we should be ordering by both probs and weight, maybe likelihood?
@@ -438,13 +461,17 @@ def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None):
     all_weights_ordered = []
     all_probs_ordered = []
     all_dirichlet_concentrations = []
+    all_betas = []
 
     make_order = False
     if order is None:
         make_order = True
 
     for mr in runs_mcmc:
-        probs, weights, beta, dirichlet_concentrations = get_parameters(mr)
+        weights, probs, beta, dirichlet_concentrations = get_parameters(mr)
+        
+        # I am yet sure how to order these
+        all_betas.append(beta)
 
         if make_order:
             order = np.argsort(weights.mean(0))[::-1]
@@ -467,7 +494,12 @@ def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None):
     else:
         all_dirichlet_concentrations = np.stack(all_dirichlet_concentrations)
 
-    return all_weights_ordered, all_probs_ordered, all_dirichlet_concentrations
+    all_betas = np.stack(all_betas)
+    print(all_betas)
+    if len(runs_mcmc) == 1:
+        return all_weights_ordered[0], all_probs_ordered[0], all_betas[0], (all_dirichlet_concentrations[0] if all_dirichlet_concentrations else None)
+
+    return all_weights_ordered, all_probs_ordered, all_betas, all_dirichlet_concentrations
 
 
 
