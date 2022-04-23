@@ -128,26 +128,14 @@ def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, hmcecs_blocks: Optional[int] = 0, alpha=.05, extra_fields = (),
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, alpha=.05, extra_fields = (),
           thinning: int = 1) -> MCMC:
-    kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob)
+    kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
     mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha, extra_fields=extra_fields)
     mcmc.print_summary()
     return mcmc
-
-def get_inferred_params(mcmc: MCMC) -> Tuple[Any, Any]:
-    posterior_samples = mcmc.get_samples()
-    print(posterior_samples)
-    beta = posterior_samples['beta']
-
-    weights = mix_weights(beta)
-
-    print("inferred stick-breaking weights mean: ", weights.mean(0))
-    print("inferred stick-breaking weights stdd: ", weights.std(0))
-
-    return posterior_samples, weights
 
 @np.vectorize
 def round_it(x, sig_figs:int = 2):
@@ -155,10 +143,9 @@ def round_it(x, sig_figs:int = 2):
 
 def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
     mcmc = infer(random_key, **run_params)
-    inferred_params = get_inferred_params(mcmc)
 
     if not pickle_results:
-        return mcmc, inferred_params
+        return mcmc
 
     suffix = uuid.uuid4()
     folder = datetime.datetime.now().strftime('%h-%d-%y-%H-%M-%S') + f"_{suffix}"
@@ -168,8 +155,8 @@ def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str 
 
     os.mkdir(folder)
 
-    with open(f"{folder}/inferred_params.pickle", "wb") as f:
-        dill.dump(inferred_params, f)
+    with open(f"{folder}/samples.pickle", "wb") as f:
+        dill.dump(mcmc.get_samples(), f)
 
     with open(f"{folder}/mcmc.pickle", "wb") as f:
         mcmc_to_save = copy.deepcopy(mcmc)
@@ -182,11 +169,11 @@ def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str 
     with open(f"{folder}/run_params.pickle", "wb") as f:
         dill.dump(run_params, f)
 
-    return mcmc, inferred_params
+    return mcmc
 
 # TODO: should this be using 'mean_accept_prob' to test against acceptance_threshold?
 # accept_prob gives higher variances, means appear very similar, but are there pathological cases?
-def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptance_threshold=.7, max_attempts=10):
+def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptance_threshold=.7, max_attempts=10, pickle_results:bool = False):
     """
         May return more than target_number_of_chains when in parallel mode
     """
@@ -195,7 +182,7 @@ def run_until_enough(random_key, run_params, target_number_of_chains=4, acceptan
     rkeys = random.split(random_key, max_attempts)
 
     while len(accepted) < target_number_of_chains and n_attempts < max_attempts:
-        r_mcmc, _ = run(rkeys[n_attempts], run_params)
+        r_mcmc = run(rkeys[n_attempts], run_params, pickle_results=pickle_results)
         accept_prob = r_mcmc.get_extra_fields()['accept_prob'].mean(0)
 
         if accept_prob >= acceptance_threshold:
@@ -237,7 +224,7 @@ def get_parameters(mcmc_run: MCMC):
     return weights, posterior_probs['probs'], posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
 
 # TODO: Is it safe to assume hypotheses correspond to maximizing penetrance?
-def get_assumed_order_for_2(probs, weights):
+def get_assumed_order_for_2(probs):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
     """
@@ -257,7 +244,7 @@ def get_assumed_order_for_2(probs, weights):
 
     probs_mean_rounded_df.index = [hypotheses[k] for k in sorted(hypotheses.keys())]
     
-    return h0, h1, h2, h12, probs_mean_rounded_df
+    return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
 
 # this will only work for well-separated values
 # instead, we should be ordering by both probs and weight, maybe likelihood?

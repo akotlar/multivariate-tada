@@ -90,7 +90,7 @@ def gen_counts(
 
     def get_mean_effects(PD: Tensor, RR: Tensor):
         norm = Normal(tensor([0., 0]), 1)
-        PD_z_score = norm.icdf(tensor(1 - PD))
+        PD_z_score = norm.icdf(1 - PD)
         PDV_z_score = norm.icdf(1-PD * RR)
         mean_effect = PDV_z_score - PD_z_score
         return mean_effect
@@ -112,7 +112,7 @@ def gen_counts(
         # print("disease_z_scores:", disease_z_scores)
         PDV_single = n.cdf(disease_z_scores)
         mvn = WrappedMVN(MultivariateNormal(mean_effects, torch.eye(2)))
-        PD12V = mvn.cdf(tensor(disease_z_scores))
+        PD12V = mvn.cdf(disease_z_scores)
         pd = tensor([*PDV_single, PD12V])
         # print("pd:", pd)
 
@@ -154,7 +154,6 @@ def gen_counts(
                 mean_effects = tensor([0., 0.])
                 effects = effect_generator_affects_one.sample()
                 mean_effects[affects] = effects[affects]
-                # print("affects", affects, "effects", effects, "mean_effects", mean_effects)
             else:
                 assert affects == 2
                 mean_effects = effects_generator_affects_both.sample()
