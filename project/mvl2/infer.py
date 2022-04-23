@@ -301,7 +301,7 @@ def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None):
         all_dirichlet_concentrations = np.stack(all_dirichlet_concentrations)
 
     all_betas = np.stack(all_betas)
-    print(all_betas)
+
     if len(runs_mcmc) == 1:
         return all_weights_ordered[0], all_probs_ordered[0], all_betas[0], (all_dirichlet_concentrations[0] if all_dirichlet_concentrations else None)
 
