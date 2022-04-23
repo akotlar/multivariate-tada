@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Optional, Literal, Iterable
+from typing import Any, Tuple, Optional, Literal, Iterable, Union
 from collections.abc import Iterable as IterableCollection
 import datetime
 import os
@@ -55,46 +55,8 @@ def mix_weights(beta: jnp.array):
 # Covariates needed
 # Sex of the individual
 # parent of origin would be important
-def model_with_halfnormal_alpha(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
-    with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
-    pd_hat = get_pdhat(n_cases, n_ctrls)
-    with numpyro.plate("prob_plate", k_hypotheses):
-        concentrations = numpyro.sample("dirichlet_concentration", HalfNormal(pd_hat).to_event(1))
-        probs = numpyro.sample("probs", Dirichlet(concentrations))
-
-    with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
-
-def model_with_uniform_alpha(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
-    with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
-
-    pd_hat = get_pdhat(n_cases, n_ctrls)
-    with numpyro.plate("prob_plate", k_hypotheses):
-        concentrations = numpyro.sample("dirichlet_concentration", Uniform(pd_hat).to_event(1))
-        probs = numpyro.sample("probs", Dirichlet(concentrations))
-
-    with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
-
-def model_with_dirichlet_prior_alpha(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
-    with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
-
-    pd_hat = get_pdhat(n_cases, n_ctrls)
-    with numpyro.plate("prob_plate", k_hypotheses):
-        concentrations = numpyro.sample("dirichlet_concentration", Dirichlet(pd_hat))
-        probs = numpyro.sample("probs", Dirichlet(concentrations))
-
-    with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
-
-########################## Gamma ppooled 
+########################## Gamma prior on dirichlet concentrations 
 # https://arxiv.org/pdf/1708.08177.pdf
 def model_with_gamma_prior_alpha8(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
     with numpyro.plate("beta_plate", k_hypotheses-1):
@@ -127,14 +89,23 @@ def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float
         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, max_tree_depth: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, alpha=.05, extra_fields = (),
-          thinning: int = 1) -> MCMC:
+def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, jit_model_args: bool,
+          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, extra_fields = (),
+          thinning: int = 1, print_diagnostics: bool = True) -> MCMC:
     kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
+    """
+    "max_tree_depth": values less than 10 give very bad results
+    """
+    assert max_tree_depth >= 10
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
     mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha, extra_fields=extra_fields)
-    mcmc.print_summary()
+
+    if print_diagnostics:
+        mcmc.print_summary()
+        weights, probs, _, _ = get_parameters(mcmc)
+        print("weights.mean(0)", weights.mean(0))
+        print("probs.mean(0)", probs.mean(0))
     return mcmc
 
 @np.vectorize
@@ -224,9 +195,49 @@ def get_parameters(mcmc_run: MCMC):
     return weights, posterior_probs['probs'], posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
 
 # TODO: Is it safe to assume hypotheses correspond to maximizing penetrance?
-def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
+# def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
+#     """
+#     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
+#     """
+#     hypotheses = {}
+
+#     mapping= {
+#         'unaffected': 'P(~D|V,H)',
+#         'affected1': 'P(D1|V,H)',
+#         'affected2': 'P(D2|V,H)',
+#         'affected12': 'P(D12|V,H)'
+#     }
+#     print("[mapping[x] for x in data_columns]", [mapping[x] for x in data_columns])
+#     probs_mean_rounded = round_it(probs.mean(0), 3)
+#     display("probs_mean_rounded", probs_mean_rounded)
+#     probs_mean_rounded_df = pd.DataFrame(probs_mean_rounded, columns=[mapping[x] for x in data_columns])
+#     print("probs_mean_rounded_df", probs_mean_rounded_df)
+#     print(probs_mean_rounded_df['P(~D|V,H)'])
+#     h0 = probs_mean_rounded_df['P(~D|V,H)'].idxmax()
+#     hypotheses[h0] = 'H0'
+#     h1 = (probs_mean_rounded_df['P(D1|V,H)'] - probs_mean_rounded_df['P(D2|V,H)']).idxmax() #(case1 > case2)
+#     print("h1", h1)
+#     hypotheses[h1] = 'H1'
+#     h2 = (probs_mean_rounded_df['P(D2|V,H)'] - probs_mean_rounded_df['P(D1|V,H)']).idxmax() #(case2 > case1)
+#     print("h2", h2)
+#     hypotheses[h2] = 'H2'
+#     h12 = (probs_mean_rounded_df['P(D12|V,H)']).idxmax()
+#     print('h12', h12)
+#     hypotheses[h12] = 'H12'
+
+#     print('hypotheses', hypotheses)
+
+#     probs_mean_rounded_df.index = [hypotheses[k] for k in probs_mean_rounded_df.index]
+    
+#     return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
+
+# TODO: use prevalences to infer order
+def get_assumed_order_for_2(probs, prevalences: Iterable[Union[int, float]], data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
+    prevalences: Iterable[Union[int, float]]
+        The list of prevalences for individuals affected by disease1, disease2, in the order presented in the data (so if disease1 comes first then disease 2, list that ).
+        The last element of the prevalences array should be comorbidity, if known
     """
     hypotheses = {}
 
@@ -237,21 +248,21 @@ def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'aff
         'affected12': 'P(D12|V,H)'
     }
 
-    probs_mean_rounded = round_it(probs.mean(0))
-    probs_mean_rounded_df = pd.DataFrame(probs_mean_rounded, columns=[mapping[x] for x in data_columns])
+    probs_mean = probs.mean(0)#round_it(probs.mean(0), 4)
+    probs_mean_df = pd.DataFrame(probs_mean, dtype='float32', columns=[mapping[x] for x in data_columns])
 
-    h0 = probs_mean_rounded_df['P(~D|V,H)'].idxmax()
+    h0 = probs_mean_df['P(~D|V,H)'].idxmax()
     hypotheses[h0] = 'H0'
-    h1 = (probs_mean_rounded_df['P(D1|V,H)'] - probs_mean_rounded_df['P(D2|V,H)']).idxmax() #(case1 > case2)
+    h1 = (probs_mean_df['P(D1|V,H)'] - probs_mean_df['P(D2|V,H)']).idxmax() #(case1 > case2)
     hypotheses[h1] = 'H1'
-    h2 = (probs_mean_rounded_df['P(D2|V,H)'] - probs_mean_rounded_df['P(D1|V,H)']).idxmax() #(case2 > case1)
+    h2 = (probs_mean_df['P(D2|V,H)'] - probs_mean_df['P(D1|V,H)']).idxmax() #(case2 > case1)
     hypotheses[h2] = 'H2'
-    h12 = (probs_mean_rounded_df['P(D12|V,H)']).idxmax()
+    h12 = (probs_mean_df['P(D12|V,H)']).idxmax()
     hypotheses[h12] = 'H12'
 
-    probs_mean_rounded_df.index = [hypotheses[k] for k in sorted(hypotheses.keys())]
+    probs_mean_df.index = [hypotheses[k] for k in probs_mean_df.index]
     
-    return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
+    return np.array([h0, h1, h2, h12]), probs_mean_df
 
 # this will only work for well-separated values
 # instead, we should be ordering by both probs and weight, maybe likelihood?

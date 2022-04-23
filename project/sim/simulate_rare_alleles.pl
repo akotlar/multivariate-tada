@@ -97,13 +97,14 @@ print "\nLambda is $lam, sigma[1] is $sigma[1], sigma[0] is $sigma[0], rho is $r
 
 my @stupid_sum;
 
+my @affected;
 for(my $i = 0; $i < $Tot_G; $i++)
 {
 	# Choose the number of rare allele carriers $this_c and then who they are $rare_allele_carriers[$i][1..$this_c] 
 	my $this_c = random_poisson(1,$lambda);
 	say STDERR "number of rare alleles is $this_c";
 	$rare_allele_carriers[$i][0] = $this_c;
-	# print "\n For i = $i we have lambda = $lambda  Totala count $this_c \n";
+	# print "\n For i = $i we have lambda = $lambda  Total count $this_c \n";
 	my @this_stupid;
 	$this_stupid[0] = 0.0;
 	$this_stupid[1] = 0.0;
@@ -121,16 +122,28 @@ for(my $i = 0; $i < $Tot_G; $i++)
 			# print "\n Found person $temp[$j-1]";
 		}
 		my $temp = random_uniform();
-		say "random_uniform_temp is $temp"
+		print "random_uniform_temp i";
 		if($temp > 1.0 - $model_p[3])
-		{
+		{	
+			# Q: why do we consider alpha 1 only when both diseases affected?
 			# Both diseases affected;
+			$affected[$i] = "12"
 			my $this_p = $this_c / (2.0*$Tot_N);
 			my $this_q = 1.0 - $this_p;
 			my @ttemp = random_normal(2,0,1);
+			p @ttemp;
 			my @alpha0;
 			my @alpha1;
 			$alpha0[0] = $ttemp[0]*$sigma[0] + $mu[0];
+			print "alpha1: $alpha[0]"
+			print "alpha2: $alpha[1]"
+			# sigma and mu are defined above
+			# $sigma[0] = 0.25;
+			# $mu[0] = 1.0;
+			# $mu[1] = 1.0;
+			# $sigma[1] = 0.25;
+			# $nu comes from $rho and $sigma
+			# can we estimate sigma? (std dev of counts?)
 			$alpha0[1] = ($alpha0[0] - $mu[0])*$lam + $mu[1] + $nu*$ttemp[1];
 			for(my $m_hit = 0; $m_hit < 2; $m_hit++)
 			{
@@ -182,6 +195,9 @@ for(my $i = 0; $i < $Tot_G; $i++)
 				$this_stupid[$m_hit] += $adiff;
 			}
 		}
+
+		# Do genes with no alleles affect none or is it just sampling error, or does it not matter?
+		$affected[$i] = "0"
 	}
 	#if((abs($this_stupid[0]) > 1e-15) || (abs($this_stupid[1]) > 1e-15))
 	#{
@@ -275,7 +291,6 @@ print FILE_SS "\n\nFinal Observed Prevalences for this study are (Disorder1,Diso
 open(FILE,">$ARGV[11]") || die "\n Can not open $ARGV[11] for writing \n";
 print FILE "Per_Gene_Counts_Unaffected_Unaffected,Unaffected_Affected,Affected_Unaffected,Affected_Affected\n";
 
-p @rare_allele_carriers;
 for(my $i = 0; $i < $Tot_G; $i++)
 {
 	my @aff_c;
