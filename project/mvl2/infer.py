@@ -224,14 +224,21 @@ def get_parameters(mcmc_run: MCMC):
     return weights, posterior_probs['probs'], posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
 
 # TODO: Is it safe to assume hypotheses correspond to maximizing penetrance?
-def get_assumed_order_for_2(probs):
+def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
     """
     hypotheses = {}
 
+    mapping= {
+        'unaffected': 'P(~D|V,H)',
+        'affected1': 'P(D1|V,H)',
+        'affected2': 'P(D2|V,H)',
+        'affected12': 'P(D12|V,H)'
+    }
+
     probs_mean_rounded = round_it(probs.mean(0))
-    probs_mean_rounded_df = pd.DataFrame(probs_mean_rounded, columns=['P(~D|V,H)', 'P(D1|V,H)', 'P(D2|V,H)', 'P(D12|V,H)'])
+    probs_mean_rounded_df = pd.DataFrame(probs_mean_rounded, columns=[mapping[x] for x in data_columns])
 
     h0 = probs_mean_rounded_df['P(~D|V,H)'].idxmax()
     hypotheses[h0] = 'H0'
