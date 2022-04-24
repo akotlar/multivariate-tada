@@ -70,11 +70,13 @@ def method_moments_estimator_gamma_shape_rate(data: ArrayLike):
     return moment_methods_shape, moment_methods_rate
 
 def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
-                                  shared_gamma_prior: bool = False,
+                                  shared_dirichlet_prior: bool = False,
                                   gamma_shape: Union[float, ArrayLike] = None,
                                   gamma_rate: Union[float, ArrayLike] = None):
     """
-        :param shared_gamma_prior: bool
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
             Whether each component should share the same Gamma prior.
             This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
     """
@@ -89,8 +91,8 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
 
         #     # assert gamma_shape is not None and gamma_rate is not None
         #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
-        if shared_gamma_prior:
-            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
+        if shared_dirichlet_prior:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
         else:
             concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
         probs = numpyro.sample("probs", Dirichlet(concentrations))
@@ -100,7 +102,7 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
 def infer(random_key: random.PRNGKey, data: ArrayLike,
-          model_to_run: Callable = model, shared_gamma_prior: bool = False, max_K: int = None,
+          model_to_run: Callable = model, shared_dirichlet_prior: bool = False, max_K: int = None,
           gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
           jit_model_args: bool = False, num_warmup: int = 2000, num_samples: int = 4000, num_chains: int = 1, chain_method: str = 'parallel', 
           target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, 
@@ -112,7 +114,7 @@ def infer(random_key: random.PRNGKey, data: ArrayLike,
     assert max_tree_depth >= 10
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
-    mcmc.run(random_key, data, shared_gamma_prior = shared_gamma_prior, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
+    mcmc.run(random_key, data, shared_dirichlet_prior = shared_dirichlet_prior, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
 
     if print_diagnostics:
         mcmc.print_summary()
