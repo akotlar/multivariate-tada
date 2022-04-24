@@ -237,7 +237,7 @@ def get_parameters(mcmc_run: MCMC):
 #     return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
 
 # TODO: use prevalences to infer order
-def get_assumed_order_for_2(probs, prevalences: Iterable[Union[int, float]], data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
+def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12'], prevalences: ArrayLike = None, data: ArrayLike = None, ):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
     prevalences: Iterable[Union[int, float]]
