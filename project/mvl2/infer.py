@@ -80,9 +80,6 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
-    # with numpyro.plate("concentrations_plate", 1):
-    #     
-
     with numpyro.plate("prob_plate", k_hypotheses):
         gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
         # if gamma_shape is None:
