@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Optional, Literal, Iterable, Union
+from typing import Any, Callable, Tuple, Optional, Literal, Iterable, Union
 from collections.abc import Iterable as IterableCollection
 import datetime
 import os
@@ -75,7 +75,8 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
                                   gamma_rate: Union[float, ArrayLike] = None):
     """
         :param shared_gamma_prior: bool
-            Whether each component should share the same Gamma prior
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
     """
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
@@ -98,8 +99,9 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-def infer(random_key: random.PRNGKey, data: ArrayLike, model_to_run: function = model,
-          max_K: int = None, gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
+def infer(random_key: random.PRNGKey, data: ArrayLike,
+          model_to_run: Callable = model, shared_gamma_prior: bool = False, max_K: int = None,
+          gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
           jit_model_args: bool = False, num_warmup: int = 2000, num_samples: int = 4000, num_chains: int = 1, chain_method: str = 'parallel', 
           target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, 
           thinning: int = 1, print_diagnostics: bool = True, extra_fields: Tuple['str'] = ("potential_energy", "energy", "accept_prob", "mean_accept_prob"), **kwargs) -> MCMC:
@@ -110,7 +112,7 @@ def infer(random_key: random.PRNGKey, data: ArrayLike, model_to_run: function = 
     assert max_tree_depth >= 10
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
-    mcmc.run(random_key, data, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
+    mcmc.run(random_key, data, shared_gamma_prior = shared_gamma_prior, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
 
     if print_diagnostics:
         mcmc.print_summary()
