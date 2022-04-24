@@ -60,43 +60,52 @@ def mix_weights(beta: jnp.array):
 
 ########################## Gamma prior on dirichlet concentrations 
 # https://arxiv.org/pdf/1708.08177.pdf
-def method_moments_estimator_gamma_shape_rate(data):
+def method_moments_estimator_gamma_shape_rate(data: ArrayLike):
     empirical_prevalence_estimate = data.mean(0)
-    std = data.std(0)
+    sd = data.std(0)
 
-    moment_methods_shape = empirical_prevalence_estimate**2 / std**2
-    moment_methods_rate = empirical_prevalence_estimate / std
+    moment_methods_shape = empirical_prevalence_estimate**2 / sd**2
+    moment_methods_rate = empirical_prevalence_estimate / sd
 
     return moment_methods_shape, moment_methods_rate
 
-def model_with_gamma_prior_alpha8(data = None, k_hypotheses: int = 4, alpha: float = .05,
+def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
+                                  shared_gamma_prior: bool = False,
                                   gamma_shape: Union[float, ArrayLike] = None,
                                   gamma_rate: Union[float, ArrayLike] = None):
+    """
+        :param shared_gamma_prior: bool
+            Whether each component should share the same Gamma prior
+    """
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
-    with numpyro.plate("concentrations_plate", 1):
-        # if gamma_shape is None:
-        #     assert gamma_rate is None and data is not None
-        #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
-
-        # assert gamma_shape is not None and gamma_rate is not None
-        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
-
-        concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
+    # with numpyro.plate("concentrations_plate", 1):
+    #     
 
     with numpyro.plate("prob_plate", k_hypotheses):
+        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        # if gamma_shape is None:
+        #     #     assert gamma_rate is None and data is not None
+        #     #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+
+        #     # assert gamma_shape is not None and gamma_rate is not None
+        #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        if shared_gamma_prior:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
+        else:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
         probs = numpyro.sample("probs", Dirichlet(concentrations))
 
     with numpyro.plate("data", data.shape[0]):
         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-def infer(random_key: random.PRNGKey, model_to_run, data,
+def infer(random_key: random.PRNGKey, data: ArrayLike, model_to_run: function = model,
           max_K: int = None, gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
           jit_model_args: bool = False, num_warmup: int = 2000, num_samples: int = 4000, num_chains: int = 1, chain_method: str = 'parallel', 
           target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, 
-          thinning: int = 1, print_diagnostics: bool = True, extra_fields = (), **kwargs) -> MCMC:
+          thinning: int = 1, print_diagnostics: bool = True, extra_fields: Tuple['str'] = ("potential_energy", "energy", "accept_prob", "mean_accept_prob"), **kwargs) -> MCMC:
     kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
     """
     "max_tree_depth": values less than 10 give very bad results
