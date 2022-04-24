@@ -190,7 +190,7 @@ def gen_counts(
             print(f"failed on {geneIdx}, retrying")
             run(geneIdx)
 
-    alt_counts = tensor(alt_counts)
+    alt_counts = tensor(np.array(alt_counts))
     PVD_PD_hats = tensor(PVD_PD_hats)
     PVDs = tensor(PVDs)
 

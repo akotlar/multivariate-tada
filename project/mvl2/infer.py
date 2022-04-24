@@ -14,6 +14,7 @@ from jax.nn import softmax
 import jax.numpy as jnp
 
 import numpy as np
+import numpy.typing as npt
 import numpyro
 from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
@@ -24,6 +25,7 @@ import pandas as pd
 import sigfig
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
+ArrayLike = npt.ArrayLike
 
 def set_platform(platform: Literal["cpu", "gpu", "tpu"] = "cpu") -> None:
     numpyro.set_platform(platform)
@@ -58,17 +60,30 @@ def mix_weights(beta: jnp.array):
 
 ########################## Gamma prior on dirichlet concentrations 
 # https://arxiv.org/pdf/1708.08177.pdf
-def model_with_gamma_prior_alpha8(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
+def method_moments_estimator_gamma_shape_rate(data):
+    empirical_prevalence_estimate = data.mean(0)
+    std = data.std(0)
+
+    moment_methods_shape = empirical_prevalence_estimate**2 / std**2
+    moment_methods_rate = empirical_prevalence_estimate / std
+
+    return moment_methods_shape, moment_methods_rate
+
+def model_with_gamma_prior_alpha8(data = None, k_hypotheses: int = 4, alpha: float = .05,
+                                  gamma_shape: Union[float, ArrayLike] = None,
+                                  gamma_rate: Union[float, ArrayLike] = None):
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
     with numpyro.plate("concentrations_plate", 1):
-        empirical_prevalence_estimate = data.mean(0)
-        std = data.std(0)
+        # if gamma_shape is None:
+        #     assert gamma_rate is None and data is not None
+        #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
 
-        moment_methods_shape = empirical_prevalence_estimate**2 / std**2
-        moment_methods_rate = empirical_prevalence_estimate / std
-        concentrations = numpyro.sample("dirichlet_concentration", Gamma(moment_methods_shape, moment_methods_rate))
+        # assert gamma_shape is not None and gamma_rate is not None
+        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+
+        concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
 
     with numpyro.plate("prob_plate", k_hypotheses):
         probs = numpyro.sample("probs", Dirichlet(concentrations))
@@ -77,21 +92,11 @@ def model_with_gamma_prior_alpha8(data, n_cases: np.array, n_ctrls: int, k_hypot
         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-def model(data, n_cases: np.array, n_ctrls: int, k_hypotheses: int, alpha: float = .05):
-    with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
-
-    pd_hat = get_pdhat(n_cases, n_ctrls)
-    with numpyro.plate("prob_plate", k_hypotheses):
-        probs = numpyro.sample("probs", Dirichlet(pd_hat))
-
-    with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
-
-def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_ctrls: int, max_K: int, jit_model_args: bool,
-          num_warmup: int, num_samples: int, num_chains: int, chain_method: str, target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, extra_fields = (),
-          thinning: int = 1, print_diagnostics: bool = True) -> MCMC:
+def infer(random_key: random.PRNGKey, model_to_run, data,
+          max_K: int = None, gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
+          jit_model_args: bool = False, num_warmup: int = 2000, num_samples: int = 4000, num_chains: int = 1, chain_method: str = 'parallel', 
+          target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, 
+          thinning: int = 1, print_diagnostics: bool = True, extra_fields = (), **kwargs) -> MCMC:
     kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
     """
     "max_tree_depth": values less than 10 give very bad results
@@ -99,7 +104,7 @@ def infer(random_key: random.PRNGKey, model_to_run, data, n_cases: np.array, n_c
     assert max_tree_depth >= 10
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
-    mcmc.run(random_key, data, n_cases, n_ctrls, max_K, alpha, extra_fields=extra_fields)
+    mcmc.run(random_key, data, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
 
     if print_diagnostics:
         mcmc.print_summary()
