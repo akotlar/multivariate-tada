@@ -80,17 +80,17 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
             Whether each component should share the same Gamma prior.
             This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
     """
+    # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
+    # print("x", x)
     with numpyro.plate("beta_plate", k_hypotheses-1):
         beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
 
     with numpyro.plate("prob_plate", k_hypotheses):
-        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
-        # if gamma_shape is None:
-        #     #     assert gamma_rate is None and data is not None
-        #     #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        if gamma_shape is None:
+            assert gamma_rate is None and data is not None
+            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        assert gamma_shape is not None and gamma_rate is not None
 
-        #     # assert gamma_shape is not None and gamma_rate is not None
-        #     gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
         if shared_dirichlet_prior:
             concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
         else:
@@ -247,11 +247,11 @@ def get_parameters(mcmc_run: MCMC):
 #     return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
 
 # TODO: use prevalences to infer order
-def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12'], prevalences: ArrayLike = None, data: ArrayLike = None, ):
+def get_assumed_order_for_2(probs: np.ndarray, data_columns: List[str] = ['unaffected', 'affected1', 'affected2', 'affected12'], prevalences: np.ndarray = None, data: np.ndarray = None, ):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
     prevalences: Iterable[Union[int, float]]
-        The list of prevalences for individuals affected by disease1, disease2, in the order presented in the data (so if disease1 comes first then disease 2, list that ).
+        The list of prevalences for each of the condition columns (ex: ctrls, cases1, cases2, cases for both). Should be in the same order as the data columns
         The last element of the prevalences array should be comorbidity, if known
     """
     hypotheses = {}
@@ -326,8 +326,6 @@ def ordered_statistics(runs_mcmc: Iterable[MCMC], order: Iterable[int] = None):
         return all_weights_ordered[0], all_probs_ordered[0], all_betas[0], (all_dirichlet_concentrations[0] if all_dirichlet_concentrations else None)
 
     return all_weights_ordered, all_probs_ordered, all_betas, all_dirichlet_concentrations
-
-
 
 def get_statistics_permutations(runs_mcmc, K=4):
     # K is the number of components

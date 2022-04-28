@@ -191,7 +191,7 @@ def gen_counts(
             run(geneIdx)
 
     alt_counts = tensor(np.array(alt_counts))
-    PVD_PD_hats = tensor(PVD_PD_hats)
+    PVD_PD_hats = tensor(np.array(PVD_PD_hats))
     PVDs = tensor(PVDs)
 
     return {
