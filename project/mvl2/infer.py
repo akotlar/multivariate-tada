@@ -203,6 +203,7 @@ def select_best_chain(runs_mcmc):
 
     return runs_mcmc[int(best_index)], res
 
+# TODO: get this from last state, or predictive?
 def get_parameters(mcmc_run: MCMC):
     posterior_probs = mcmc_run.get_samples()
     weights = np.array(mix_weights(posterior_probs['beta']))
