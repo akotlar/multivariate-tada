@@ -19,6 +19,9 @@ import numpyro
 from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
 from numpyro.contrib.funsor.infer_util import config_enumerate
+from jax.scipy.stats import norm
+
+Inv_Cumulative_Normal = norm.ppf
 
 import pandas as pd
 
@@ -82,8 +85,9 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
     """
     # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
     # print("x", x)
+    # alpha = numpyro.param("alpha", alpha)
     with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha / k_hypotheses))
+        beta = numpyro.sample("beta", Beta(1, alpha))
 
     with numpyro.plate("prob_plate", k_hypotheses):
         if gamma_shape is None:
@@ -113,6 +117,8 @@ def infer(random_key: random.PRNGKey, data: ArrayLike,
     """
     assert max_tree_depth >= 10
 
+    alpha = alpha / max_K
+    print('alpha', alpha)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
     mcmc.run(random_key, data, shared_dirichlet_prior = shared_dirichlet_prior, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
 
@@ -406,3 +412,183 @@ def get_run_params_data(folder: str) -> Tuple[dict, dict]:
         
     return run_params
 
+def get_assumed_order_bivariate(probs: np.ndarray, data: np.ndarray = None, data_columns: List[str] = ['unaffected', 'affected1', 'affected2', 'affected12']):
+    """
+    Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
+    """
+    hypotheses = {}
+
+    mapping= {
+        'unaffected': 'P(~D|V,H)',
+        'affected1': 'P(D1|V,H)',
+        'affected2': 'P(D2|V,H)',
+        'affected12': 'P(D12|V,H)'
+    }
+
+    prevalences = (data/data.sum(1).reshape(data.shape[0], 1)).mean(0)
+
+    probs_mean = probs.mean(0)
+    probs_mean_df = pd.DataFrame(probs_mean, dtype='float32', columns=[mapping[x] for x in data_columns])
+
+    pdiff = np.abs(probs_mean - prevalences)
+    
+    h0 = -1
+    min_sum = 1
+    idx = -1
+    for row in pdiff:
+        idx += 1
+        s = row.sum()
+
+        if s < min_sum:
+            h0 = idx
+            min_sum = s
+
+    hypotheses[h0] = 'H0'
+    
+    h1 = (probs_mean_df['P(D1|V,H)'] - probs_mean_df['P(D2|V,H)']).idxmax()
+    hypotheses[h1] = 'H1'
+
+    h2 = (probs_mean_df['P(D2|V,H)'] - probs_mean_df['P(D1|V,H)']).idxmax()
+    hypotheses[h2] = 'H2'
+    
+    h12 = (probs_mean_df['P(D12|V,H)']).idxmax()
+    hypotheses[h12] = 'H12'
+
+    probs_mean_df.index = [hypotheses[k] for k in probs_mean_df.index]
+    
+    return np.array([h0, h1, h2, h12]), probs_mean_df
+
+
+# ordered_probs = best_dirichlet_concentrations_exp2
+
+def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[int, np.array], prevalences = None, hypothesis_order = None):
+    """
+    Requires index 3 to be cases for both and index 1 & 2 to be affected by 1, affected by 2, or vice versa
+    """
+    if hypothesis_order is None:
+        hypothesis_order, _ = get_assumed_order_bivariate(probs, data=observations)
+
+    ordered_weights = weights.mean(0)[hypothesis_order]
+    ordered_probs = probs.mean(0)[hypothesis_order]
+    print('ordered_weights', ordered_weights)
+    print('ordered_probs', ordered_probs)
+    # TODO: should we just take this directly from n_samples (make that a vec of ctrl, case1, case2, caseBoth)
+    # TODO: name this in-sample prevalences to distinguish from population prevalence?
+    # TODO: should we use population prevalence of sample prevalence below?
+    if prevalences is None:
+        # Alternative estimate, using weighted posterior: (ordered_weights @ ordered_probs)
+        prevalences = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
+        print("prevalence estimate", prevalences)
+
+    if isinstance(n_samples, int):
+        sample_proportions = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
+        n_samples = sample_proportions * n_samples
+    
+    alleles = n_samples*2
+    n_ctrls, n_one, n_two, n_both = alleles
+    n_ctrl1 = n_ctrls + n_two
+    n_ctrl2 = n_ctrls + n_one
+    n_case1 = n_one + n_both
+    n_case2 = n_two + n_both
+
+    i = 0
+    
+    tot_post_neither = 0
+    tot_post_one = 0
+    tot_post_two = 0
+    tot_post_both = 0
+    
+    cov_sum = 0
+    sigma1_mean_est = 0
+    sigma1_squared_est = 0 
+    sigma2_mean_est = 0
+    sigma2_squared_est = 0 
+    
+    n_is_both = 0
+    n_is_two = 0
+    n_is_one = 0
+    n_is_neither = 0
+
+    inf_rows = 0
+    
+    P_D1 = prevalences[1]
+    P_D2 = prevalences[2]
+    thresh1 = Inv_Cumulative_Normal(1 - P_D1)
+    thresh2 = Inv_Cumulative_Normal(1 - P_D2)
+    for obs in observations:
+        x_ctrl, x_one, x_two, x_both = obs
+        
+        L_D_given_z = (ordered_probs ** obs).prod(1)
+        
+        P_z_i2 = np.multiply(ordered_weights, L_D_given_z)        
+        P_z_i2 = P_z_i2/P_z_i2.sum()
+        
+        the_architecture = np.argmax(P_z_i2)
+        if the_architecture == 1:
+            n_is_two += 1
+        elif the_architecture == 2:
+            n_is_one += 1
+        elif the_architecture == 0:
+            n_is_neither += 1
+        elif the_architecture == 3:
+            n_is_both += 1
+            
+        # if the_architecture != 3:
+        #     continue
+                
+        post_neither, post_one, post_two, post_both = P_z_i2
+
+        P_V_Ctrl1 = (x_ctrl + x_two) / n_ctrl1
+        P_V_Ctrl2 = (x_ctrl + x_one) / n_ctrl2
+        P_V_Case1 = (x_one + x_both) / n_case1
+        P_V_Case2 = (x_two + x_both) / n_case2
+
+        P_V    = P_V_Ctrl1 * (1 - P_D1) + P_V_Case1 * P_D1
+        P_D1_V = P_V_Case1 * P_D1 / P_V
+        sigma1 = thresh1 - Inv_Cumulative_Normal(1 - P_D1_V)
+
+        P_V    = P_V_Ctrl2 * (1 - P_D2) + P_V_Case2 * P_D2
+        P_D2_V = P_V_Case2 * P_D2 / P_V        
+        sigma2 = thresh2 - Inv_Cumulative_Normal(1 - P_D2_V)
+        
+        if np.isinf(sigma2) or np.isinf(sigma1):
+            inf_rows += 1
+            continue
+
+        tot_post_neither += post_neither
+        tot_post_one += post_one + post_both
+        tot_post_two += post_two + post_both
+        tot_post_both += post_both
+    
+        sigma1_mean_est += (post_one + post_both) * sigma1
+        sigma1_squared_est += (post_one + post_both) * sigma1 * sigma1
+        
+        sigma2_mean_est += (post_two + post_both) * sigma2
+        sigma2_squared_est += (post_two + post_both) * sigma2 * sigma2
+        
+        cov_sum += post_both * sigma1 * sigma2
+     
+        i += 1
+
+    sigma1_mean_est_f = sigma1_mean_est / tot_post_one
+    sigma1_squared_est_f = sigma1_squared_est / tot_post_one
+    var1_est = sigma1_squared_est_f - sigma1_mean_est_f**2
+
+    sigma2_mean_est_f = sigma2_mean_est / tot_post_two
+    sigma2_squared_est_f = sigma2_squared_est / tot_post_two
+    var2_est = sigma2_squared_est_f - sigma2_mean_est_f**2
+
+    cov_sum_f = cov_sum / tot_post_both
+    cov = cov_sum_f - sigma1_mean_est_f*sigma2_mean_est_f
+
+    rho = cov / (var1_est * var2_est)**.5
+
+    print('inf_rows', inf_rows)
+    print('sigma1_mean', sigma1_mean_est_f)
+    print('sigma1_^2_mean', sigma1_squared_est_f)
+    print('sigma2_mean', sigma2_mean_est_f)
+    print('sigma2_^2_mean', sigma2_squared_est_f)
+    print('cov', cov)
+    print('rho', rho)
+
+    return var1_est, var2_est, cov, rho
