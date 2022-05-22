@@ -3,11 +3,9 @@ use IO::Zlib;
 use strict vars;
 use Math::Random qw(:all);
 use Math::Gauss ':all';
-use DDP;
 
 use vars qw(@fields @mom @dad @kid $npar);
 
-my %stats;
 if(@ARGV != 12) 
 {
 	print "\n Usage: ${0} Prev_Disorder1 Prev_Disorder2 Sample_Size No_Genes Mean_Rare_Freq_Per_Gene FractionGenes1_only FractionGenes2_only FractionBoth Rare_h2_1 rare_h2_2 rho outfile \n\n "; 
@@ -17,8 +15,8 @@ if(@ARGV != 12)
 open(FILE_SS,">$ARGV[11].ss") || die "\n Can not open $ARGV[11].ss for writing \n";
 
 open(FILE_SS,">$ARGV[11].ss") || die "\n Can not open $ARGV[11].ss for writing \n";
-print FILE_SS "Args are: " . "Prev_Disorder1\tPrev_Disorder2\tSample_Size\tNo_Genes\tMean_Rare_Freq_Per_Gene\tFractionGenes1_only\tFractionGenes2_only\tFractionBoth\tRare_h2_1\trare_h2_2\trho\toutfile\n";
-print FILE_SS "Args val: " . join("\t", @ARGV) . "\n";
+print FILE_SS "Args are: " . "Prev_Disorder1,Prev_Disorder2,Sample_Size,No_Genes,Mean_Rare_Freq_Per_Gene,FractionGenes1_only,FractionGenes2_only,FractionBoth,Rare_h2_1,rare_h2_2,rho,outfile\n";
+print FILE_SS "Args val: " . join(",", @ARGV) . "\n";
 
 my @prev;
 my @thres;
@@ -33,9 +31,6 @@ for(my $i = 0 ; $i < 2; $i++)
 	print FILE_SS "\n Disorder $i has a prev = $prev[$i] and thres = $thres[$i] \n";
 }
 
-say STDERR "THRESHOLD";
-# p @thres;
-# exit;
 my $Tot_N = $ARGV[2]+0;
 my $Tot_G = $ARGV[3]+0;
 my $Freq_P = $ARGV[4]+0;
@@ -44,8 +39,6 @@ $model_p[1] = $ARGV[5]+0;
 $model_p[2] = $ARGV[6]+0;
 $model_p[3] = $ARGV[7]+0;
 $model_p[0] = 1.0 - ($model_p[1] + $model_p[2] + $model_p[3]);
-print STDERR "model p";
-p @model_p;
 
 for(my $i =0; $i <4; $i++)
 {
@@ -83,7 +76,6 @@ my @sigma;
 my @mu;
 
 my $lambda = 2*$Tot_N * $Freq_P;
-print "\nLambda is $lambda, N is $Tot_N, P is $Freq_P";
 $sigma[0] = 0.25;
 $mu[0] = 1.0;
 $mu[1] = 1.0;
@@ -91,33 +83,28 @@ $sigma[1] = 0.25;
 my $nu = 0.0; 
 if($rho < 0.9999999999)
 {
-	# residual sum of squares = residual variance * variance = (1 - r^2) * variance_x , where r is genetic correlation
-	# https://en.wikipedia.org/wiki/Residual_sum_of_squares
 	$nu = sqrt(1.0 - $rho*$rho) * $sigma[1]*$sigma[1];
 }
-
-print "\nrho is $rho, nu is $nu";
 my $lam = ($sigma[1] / $sigma[0]) * $rho;
-print "\nLambda is $lam, sigma[1] is $sigma[1], sigma[0] is $sigma[0], rho is $rho";
-
 my @stupid_sum;
 
-my @affected;
+# 0 = gene does not increase risk of disease
+# 1 = gene increases risk for disease 2 but not disease 1
+# 2 = gene increases risk for disease 2 but not disease 1
+# 3 = gene increase risk for both disease 1 and disease 2
+my @gene_architecture = ();
 for(my $i = 0; $i < $Tot_G; $i++)
 {
 	# Choose the number of rare allele carriers $this_c and then who they are $rare_allele_carriers[$i][1..$this_c] 
 	my $this_c = random_poisson(1,$lambda);
-	say STDERR "number of rare alleles for gene $i is $this_c";
 	$rare_allele_carriers[$i][0] = $this_c;
-	# print "\n For i = $i we have lambda = $lambda  Total count $this_c \n";
+	# print "\n For i = $i we have lambda = $lambda  Totala count $this_c \n";
 	my @this_stupid;
 	$this_stupid[0] = 0.0;
 	$this_stupid[1] = 0.0;
 	if($this_c > 0)
 	{
 		my @temp = random_uniform_integer($this_c,0,$Tot_N-1);
-		print STDERR "TEMP IS";
-		p @temp;
 		for(my $j = 1; $j <=$this_c;$j++)
 		{
 			$rare_allele_carriers[$i][$j] = $temp[$j-1];
@@ -128,41 +115,16 @@ for(my $i = 0; $i < $Tot_G; $i++)
 			# print "\n Found person $temp[$j-1]";
 		}
 		my $temp = random_uniform();
-		print STDERR "random_uniform_temp i $temp";
-		print STDERR "RARE ALLELE CARRIERS";
-		p @rare_allele_carriers;
-		my $test  = $temp > 1.0 - $model_p[3] ? "TRUE" : "FALSE";
-		say STDERR "temp is $temp, model_p[3] is $model_p[3], temp > 1.0 - model_p[3] is $test";
-		# exit;
 		if($temp > 1.0 - $model_p[3])
-		{	
-			# Q: why do we consider alpha 1 only when both diseases affected?
+		{
 			# Both diseases affected;
-			$affected[$i] = "12";
+			push(@gene_architecture, 3);
 			my $this_p = $this_c / (2.0*$Tot_N);
-			print STDERR "THIS P: $this_p";
 			my $this_q = 1.0 - $this_p;
-			# 2 draws from a normal distribution (2 normal deviates)
 			my @ttemp = random_normal(2,0,1);
-			print STDERR "ttemp";
-			p @ttemp;
 			my @alpha0;
 			my @alpha1;
-			# number of rare alleles at this gene * std_deviation + 1 (why add 1?)
 			$alpha0[0] = $ttemp[0]*$sigma[0] + $mu[0];
-			print STDERR "alpha[0]: $alpha0[0]";
-			exit;
-			# print STDERR "alpha0";
-			# p @alpha0;
-			# print STDERR "alpha1";
-			# p @alpha1;
-			# sigma and mu are defined above
-			# $sigma[0] = 0.25;
-			# $mu[0] = 1.0;
-			# $mu[1] = 1.0;
-			# $sigma[1] = 0.25;
-			# $nu comes from $rho and $sigma
-			# can we estimate sigma? (std dev of counts?)
 			$alpha0[1] = ($alpha0[0] - $mu[0])*$lam + $mu[1] + $nu*$ttemp[1];
 			for(my $m_hit = 0; $m_hit < 2; $m_hit++)
 			{
@@ -187,15 +149,15 @@ for(my $i = 0; $i < $Tot_G; $i++)
 		
 		}
 		elsif($temp > $model_p[0])
-		{	
-			# affects 1
+		{
 			my $m_hit = 0;
 			if($temp > $model_p[0]+$model_p[1])
-			{	
-				# affects 2
+			{
 				$m_hit = 1;
+				push(@gene_architecture, 1);
+			} else {
+				push(@gene_architecture, 2);
 			}
-
 			my $alpha0 = random_normal(1,$mu[$m_hit],$sigma[$m_hit]);
 			my $this_p = $this_c / (2.0*$Tot_N);
 			my $this_q = 1.0 - $this_p;
@@ -216,10 +178,11 @@ for(my $i = 0; $i < $Tot_G; $i++)
 				$stupid_sum[$m_hit] += $adiff;	
 				$this_stupid[$m_hit] += $adiff;
 			}
+		} else {
+			push(@gene_architecture, 0);
 		}
-
-		# Do genes with no alleles affect none or is it just sampling error, or does it not matter?
-		$affected[$i] = "0"
+	} else {
+		die("WTF count is 0");
 	}
 	#if((abs($this_stupid[0]) > 1e-15) || (abs($this_stupid[1]) > 1e-15))
 	#{
@@ -311,7 +274,8 @@ $o_prev[2] = $both_affected / $Tot_N;
 
 print FILE_SS "\n\nFinal Observed Prevalences for this study are (Disorder1,Disorder2,Both) = $o_prev[0],$o_prev[1],$o_prev[2]\n"; 
 open(FILE,">$ARGV[11]") || die "\n Can not open $ARGV[11] for writing \n";
-print FILE "Per_Gene_Counts_Unaffected_Unaffected,Unaffected_Affected,Affected_Unaffected,Affected_Affected\n";
+print FILE "Per_Gene_Counts_Unaffected_Unaffected,Unaffected_Affected,Affected_Unaffected,Affected_Affected,Gene_Architecture\n";
+
 
 for(my $i = 0; $i < $Tot_G; $i++)
 {
@@ -320,11 +284,9 @@ for(my $i = 0; $i < $Tot_G; $i++)
 	for(my $j = 1; $j <= $rare_allele_carriers[$i][0]; $j++)
 	{
 		my $this = $rare_allele_carriers[$i][$j];
-		print STDERR "this: $this";
 		$aff_c[$affected[$this][0]][$affected[$this][1]]++;
 	}
-	print FILE "$aff_c[0][0],$aff_c[0][1],$aff_c[1][0],$aff_c[1][1]\n";
+	print FILE "$aff_c[0][0],$aff_c[0][1],$aff_c[1][0],$aff_c[1][1],$gene_architecture[$i]\n";
 }
 close(FILE);
-
 

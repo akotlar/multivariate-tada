@@ -19,7 +19,7 @@ import numpyro
 from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
 from numpyro.contrib.funsor.infer_util import config_enumerate
-from jax.scipy.stats import norm
+from scipy.stats import norm
 
 Inv_Cumulative_Normal = norm.ppf
 
@@ -461,7 +461,7 @@ def get_assumed_order_bivariate(probs: np.ndarray, data: np.ndarray = None, data
 
 # ordered_probs = best_dirichlet_concentrations_exp2
 
-def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[int, np.array], prevalences = None, hypothesis_order = None):
+def get_rho_bivariate(probs, weights, concentrations, observations: np.array, n_samples: Union[int, np.array], prevalences = None, hypothesis_order = None, true_architectures: np.ndarray = None):
     """
     Requires index 3 to be cases for both and index 1 & 2 to be affected by 1, affected by 2, or vice versa
     """
@@ -470,8 +470,11 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
 
     ordered_weights = weights.mean(0)[hypothesis_order]
     ordered_probs = probs.mean(0)[hypothesis_order]
+    ordered_concentrations = concentrations.mean(0)[hypothesis_order]
     print('ordered_weights', ordered_weights)
     print('ordered_probs', ordered_probs)
+
+    dm_model = DirichletMultinomial(concentration=ordered_concentrations)
     # TODO: should we just take this directly from n_samples (make that a vec of ctrl, case1, case2, caseBoth)
     # TODO: name this in-sample prevalences to distinguish from population prevalence?
     # TODO: should we use population prevalence of sample prevalence below?
@@ -481,8 +484,8 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
         print("prevalence estimate", prevalences)
 
     if isinstance(n_samples, int):
-        sample_proportions = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
-        n_samples = sample_proportions * n_samples
+        # sample_proportions = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
+        n_samples = prevalences * n_samples
     
     alleles = n_samples*2
     n_ctrls, n_one, n_two, n_both = alleles
@@ -497,6 +500,7 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
     tot_post_one = 0
     tot_post_two = 0
     tot_post_both = 0
+    tot_post_all_d = 0
     
     cov_sum = 0
     sigma1_mean_est = 0
@@ -515,13 +519,30 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
     P_D2 = prevalences[2]
     thresh1 = Inv_Cumulative_Normal(1 - P_D1)
     thresh2 = Inv_Cumulative_Normal(1 - P_D2)
-    for obs in observations:
+    n_genes_used = 0
+
+    if not (type(true_architectures) is np.ndarray and true_architectures.size == len(observations)):
+        true_architectures = [None] * len(observations)
+
+    for i, obs in enumerate(observations):
         x_ctrl, x_one, x_two, x_both = obs
         
         L_D_given_z = (ordered_probs ** obs).prod(1)
+        # print('L_D_given_z', (ordered_probs ** obs))
+        # print('L_D_given_z', L_D_given_z)
         
         P_z_i2 = np.multiply(ordered_weights, L_D_given_z)        
         P_z_i2 = P_z_i2/P_z_i2.sum()
+
+        # dirichlet_posterior_mean_probability = ((ordered_concentrations + obs)/(obs.sum() + ordered_concentrations.sum(1))).prod(1)
+        # print('dirichlet_posterior_mean_probability', dirichlet_posterior_mean_probability)
+        # v2 = np.exp(dm_model.log_prob(obs))
+        # v2 = np.multiply(ordered_weights, v2)
+        # v2 = v2/v2.sum()
+        # print('v2', v2, 'P_z_i2', P_z_i2)
+        # dirichlet_posterior_mean_probability = np.multiply(ordered_weights, dirichlet_posterior_mean_probability)
+        # print('dirichlet_posterior_mean_probability after multiply', dirichlet_posterior_mean_probability)
+        # dirichlet_posterior_mean_probability = dirichlet_posterior_mean_probability/dirichlet_posterior_mean_probability.sum()
         
         the_architecture = np.argmax(P_z_i2)
         if the_architecture == 1:
@@ -533,10 +554,16 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
         elif the_architecture == 3:
             n_is_both += 1
             
+        print("estimated genetic architecture", the_architecture, "real:", true_architectures[i])
         # if the_architecture != 3:
         #     continue
                 
         post_neither, post_one, post_two, post_both = P_z_i2
+        # print('P_z_i2', P_z_i2, 'dirichlet_posterior_mean_probability', dirichlet_posterior_mean_probability)
+        if post_both < .01:
+            continue
+
+        n_genes_used += 1
 
         P_V_Ctrl1 = (x_ctrl + x_two) / n_ctrl1
         P_V_Ctrl2 = (x_ctrl + x_one) / n_ctrl2
@@ -553,36 +580,42 @@ def get_rho_bivariate(probs, weights, observations: np.array, n_samples: Union[i
         
         if np.isinf(sigma2) or np.isinf(sigma1):
             inf_rows += 1
+            # print('obs', obs)
+            # print('P_D1_V', P_D1_V, 'P_V_Case1', P_V_Case1)
+            # print('P_D2_V', P_D2_V, 'P_V_Case2', P_V_Case2)
             continue
 
         tot_post_neither += post_neither
         tot_post_one += post_one + post_both
         tot_post_two += post_two + post_both
         tot_post_both += post_both
+
+        tot_post_all_d += post_one + post_two + post_both
     
-        sigma1_mean_est += (post_one + post_both) * sigma1
-        sigma1_squared_est += (post_one + post_both) * sigma1 * sigma1
+        sigma1_mean_est += (post_both) * sigma1
+        sigma1_squared_est += (post_both) * sigma1 * sigma1
         
-        sigma2_mean_est += (post_two + post_both) * sigma2
-        sigma2_squared_est += (post_two + post_both) * sigma2 * sigma2
+        sigma2_mean_est += (post_both) * sigma2
+        sigma2_squared_est += (post_both) * sigma2 * sigma2
         
         cov_sum += post_both * sigma1 * sigma2
      
         i += 1
 
-    sigma1_mean_est_f = sigma1_mean_est / tot_post_one
-    sigma1_squared_est_f = sigma1_squared_est / tot_post_one
-    var1_est = sigma1_squared_est_f - sigma1_mean_est_f**2
+    sigma1_mean_est_f = sigma1_mean_est / tot_post_both
+    sigma1_squared_est_f = sigma1_squared_est / tot_post_both
+    var1_est = (sigma1_squared_est_f - sigma1_mean_est_f**2)#/tot_post_both
 
-    sigma2_mean_est_f = sigma2_mean_est / tot_post_two
-    sigma2_squared_est_f = sigma2_squared_est / tot_post_two
-    var2_est = sigma2_squared_est_f - sigma2_mean_est_f**2
+    sigma2_mean_est_f = sigma2_mean_est / tot_post_both
+    sigma2_squared_est_f = sigma2_squared_est / tot_post_both
+    var2_est = (sigma2_squared_est_f - sigma2_mean_est_f**2)#/tot_post_both
 
     cov_sum_f = cov_sum / tot_post_both
-    cov = cov_sum_f - sigma1_mean_est_f*sigma2_mean_est_f
+    cov = cov_sum_f - sigma1_mean_est_f*sigma2_mean_est_f#*tot_post_both
 
     rho = cov / (var1_est * var2_est)**.5
 
+    print('n_genes_used', n_genes_used)
     print('inf_rows', inf_rows)
     print('sigma1_mean', sigma1_mean_est_f)
     print('sigma1_^2_mean', sigma1_squared_est_f)
