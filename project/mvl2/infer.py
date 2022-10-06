@@ -18,7 +18,8 @@ import numpy.typing as npt
 import numpyro
 from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
-from numpyro.contrib.funsor.infer_util import config_enumerate
+from numpyro.distributions.conjugate import _log_beta_1
+
 from scipy.stats import norm
 
 Inv_Cumulative_Normal = norm.ppf
@@ -26,6 +27,11 @@ Inv_Cumulative_Normal = norm.ppf
 import pandas as pd
 
 import sigfig
+import jax
+
+class TruncatedMultinomial(Multinomial):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
 ArrayLike = npt.ArrayLike
@@ -72,7 +78,191 @@ def method_moments_estimator_gamma_shape_rate(data: ArrayLike):
 
     return moment_methods_shape, moment_methods_rate
 
-def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
+def modelLKJ(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
+                                  shared_dirichlet_prior: bool = False,
+                                  gamma_shape: Union[float, ArrayLike] = None,
+                                  gamma_rate: Union[float, ArrayLike] = None):
+    d = data.shape[1]
+    # # options = dict(dtype=data.dtype, device=data.device)
+    # # Vector of variances for each of the d variables
+    # theta = numpyro.sample("theta", HalfCauchy(jnp.ones(d)))
+    # # Lower cholesky factor of a correlation matrix
+    # concentration = jnp.ones(())  # Implies a uniform distribution over correlation matrices
+    # print('concentration', concentration)
+    # L_omega = numpyro.sample("L_omega", LKJCholesky(d, concentration))
+    # print('theta', theta)
+    # print('L_omega', L_omega)
+    # # Lower cholesky factor of the covariance matrix
+    # L_Omega = jnp.matmul(jnp.diag(jnp.sqrt(theta)), L_omega)
+    # # For inference with SVI, one might prefer to use torch.bmm(theta.sqrt().diag_embed(), L_omega)
+    # print('L_Omega', L_Omega)
+
+
+    # # Vector of expectations
+    # mu = np.zeros(d)
+
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", k_hypotheses):
+        # options = dict(dtype=data.dtype, device=data.device)
+        # Vector of variances for each of the d variables
+        # theta = numpyro.sample("theta", HalfCauchy(jnp.ones(d)))
+        # # Lower cholesky factor of a correlation matrix
+        # L_omega = numpyro.sample("L_omega", LKJCholesky(d, .5))
+        # # print('theta', theta)
+        # # print('L_omega', L_omega)
+        # # Lower cholesky factor of the covariance matrix
+        # L_Omega = jnp.matmul(jnp.diag(jnp.sqrt(theta)), L_omega)
+        # # For inference with SVI, one might prefer to use torch.bmm(theta.sqrt().diag_embed(), L_omega)
+        # # print('L_Omega', L_Omega)
+        # # print('cov_est', cov_est)
+        # mu = np.zeros(d)if gamma_shape is None:
+        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+
+        scale = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
+
+        # d = Gamma(1, 1).expand([data.shape[1]]).to_event(1)
+        # scale = numpyro.sample('scale', d)
+
+        # Sample the correlation matrix.
+        d = LKJCholesky(data.shape[1], .25)
+        cholesky_corr = numpyro.sample('cholesky_corr', d)
+
+        # Evaluate the Cholesky decomposition of the covariance matrix.
+        cholesky_cov = cholesky_corr * jnp.sqrt(scale[:, None])
+        # print('cholesky_cov', cholesky_cov)
+        logtheta = numpyro.sample("logtheta", MultivariateNormal(0, scale_tril=cholesky_cov))
+        probs = jax.nn.softmax(logtheta, -1)
+        # theta = jnp.exp(logtheta)
+        # print('probs', probs)
+
+    with numpyro.plate("data", data.shape[0]):
+        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
+        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
+
+# def modelLN(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
+#                                   shared_dirichlet_prior: bool = False,
+#                                   gamma_shape: Union[float, ArrayLike] = None,
+#                                   gamma_rate: Union[float, ArrayLike] = None):
+#     print("running")
+#     """
+#         Parameters
+#         ----------
+#         shared_dirichlet_prior: bool
+#             Whether each component should share the same Gamma prior.
+#             This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+#     """
+#     # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
+#     # print("x", x)
+#     # alpha = numpyro.param("alpha", alpha)
+#     with numpyro.plate("beta_plate", k_hypotheses-1):
+#         beta = numpyro.sample("beta", Beta(1, alpha))
+    
+#     # Dirichlet prior 𝑝(𝜃|𝛼) is replaced by a logistic-normal distribution
+#     probs = data / data.sum(1).reshape(data.shape[0], 1)
+#     mean_est = jnp.mean(probs)#jnp.log(jnp.mean(data, axis=0)).reshape(data.shape[1], 1)
+#     # print('probs', probs)
+#     # print('mean_est', mean_est)
+#     cov_est = jnp.cov(probs.T)
+#     print('cov_est', cov_est)
+#     logtheta = numpyro.sample("logtheta", MultivariateNormal(mean_est, cov_est))
+#     theta = jax.nn.softmax(logtheta, -1)
+#     with numpyro.plate("prob_plate", k_hypotheses):
+#         # print('cov_est', cov_est)
+
+        
+        
+#         # theta = jnp.exp(logtheta)
+#         # print('theta', theta.shape)
+
+#     with numpyro.plate("data", data.shape[0]):
+#         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
+#         return numpyro.sample("obs", Multinomial(probs=theta[z]), obs=data)
+
+def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = .05,
+                                  shared_dirichlet_prior: bool = False,
+                                  gamma_shape: Union[float, ArrayLike] = None,
+                                  gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
+    # print("x", x)
+    # alpha = numpyro.param("alpha", alpha)
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", k_hypotheses):
+        if gamma_shape is None:
+            assert gamma_rate is None and data is not None
+            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        assert gamma_shape is not None and gamma_rate is not None
+        gamma_rate = numpyro.deterministic('gamma_rate', gamma_rate)
+        gamma_shape = numpyro.deterministic('gamma_shape', gamma_shape)
+
+        if shared_dirichlet_prior:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
+        else:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
+        probs = numpyro.sample("probs", Dirichlet(concentrations))
+
+    with numpyro.plate("data", num_data):
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
+
+        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
+
+def modelPoisson(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
+                                  shared_dirichlet_prior: bool = False,
+                                  gamma_shape: Union[float, ArrayLike] = None,
+                                  gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
+    # print("x", x)
+    # alpha = numpyro.param("alpha", alpha)
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", k_hypotheses):
+        if gamma_shape is None:
+            assert gamma_rate is None and data is not None
+            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        assert gamma_shape is not None and gamma_rate is not None
+
+        if shared_dirichlet_prior:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
+        else:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
+        # probs = numpyro.sample("probs", Dirichlet(concentrations))
+        rate = numpyro.sample('rate', Gamma(gamma_shape, gamma_rate).to_event(1))
+        concentration = numpyro.sample('concentration', Gamma(gamma_shape, gamma_rate).to_event(1))
+    lmbda = numpyro.sample("lambda", Gamma([[gamma_shape,gamma_shape,gamma_shape,gamma_shape]], [[gamma_rate,gamma_rate,gamma_rate,gamma_rate]]))
+    # t =
+    # t = jnp.array([[0,1,2,3],[0,1,2,3],[0,1,2,3],[0,1,2,3]])
+
+    with numpyro.plate("data", data.shape[0]):
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
+        print('lmbda',lmbda.shape)
+        print('data', data.shape)
+        print('data', data[0])
+        print('lmbda[z]', lmbda[z].shape)
+        # print('probs', probs)
+        return numpyro.sample("obs", Poisson(lmbda[z]), obs=data)
+
+def modelFinite(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
                                   shared_dirichlet_prior: bool = False,
                                   gamma_shape: Union[float, ArrayLike] = None,
                                   gamma_rate: Union[float, ArrayLike] = None):
@@ -102,25 +292,27 @@ def model(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
         probs = numpyro.sample("probs", Dirichlet(concentrations))
 
     with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        # z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
+        return numpyro.sample("obs", MixtureSameFamily(Categorical(pz), Multinomial(probs=probs)), obs=data)
+
+def get_alpha(max_K: int, base_alpha: float = .05):
+    return base_alpha/max_K
 
 def infer(random_key: random.PRNGKey, data: ArrayLike,
-          model_to_run: Callable = model, shared_dirichlet_prior: bool = False, max_K: int = None,
-          gamma_shape: Union[float, ArrayLike] = None, gamma_rate: Union[float, ArrayLike] = None,
+          model: Callable = model,
           jit_model_args: bool = False, num_warmup: int = 2000, num_samples: int = 4000, num_chains: int = 1, chain_method: str = 'parallel', 
-          target_accept_prob: float = 0.8, max_tree_depth: int = 10, alpha=.05, 
+          target_accept_prob: float = 0.8, max_tree_depth: int = 10,
           thinning: int = 1, print_diagnostics: bool = True, extra_fields: Tuple['str'] = ("potential_energy", "energy", "accept_prob", "mean_accept_prob"), **kwargs) -> MCMC:
-    kernel = NUTS(model_to_run, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
+    kernel = NUTS(model, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
     """
     "max_tree_depth": values less than 10 give very bad results
     """
+    print("model chosen:", model)
     assert max_tree_depth >= 10
 
-    alpha = alpha / max_K
-    print('alpha', alpha)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
-    mcmc.run(random_key, data, shared_dirichlet_prior = shared_dirichlet_prior, k_hypotheses = max_K, alpha = alpha, extra_fields=extra_fields)
+    mcmc.run(random_key, data, extra_fields=extra_fields, **kwargs)
 
     if print_diagnostics:
         mcmc.print_summary()
@@ -214,7 +406,7 @@ def get_parameters(mcmc_run: MCMC):
     posterior_probs = mcmc_run.get_samples()
     weights = np.array(mix_weights(posterior_probs['beta']))
 
-    return weights, posterior_probs['probs'], posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
+    return weights, posterior_probs.get('probs'), posterior_probs['beta'], posterior_probs.get('dirichlet_concentration')
 
 # TODO: Is it safe to assume hypotheses correspond to maximizing penetrance?
 # def get_assumed_order_for_2(probs, data_columns=['unaffected', 'affected1', 'affected2', 'affected12']):
@@ -254,12 +446,14 @@ def get_parameters(mcmc_run: MCMC):
 #     return np.array([h0, h1, h2, h12]), probs_mean_rounded_df
 
 # TODO: use prevalences to infer order
-def get_assumed_order_for_2(probs: np.ndarray, data_columns: List[str] = ['unaffected', 'affected1', 'affected2', 'affected12'], prevalences: np.ndarray = None, data: np.ndarray = None, ):
+def get_assumed_order_for_2(probs: np.ndarray, data_columns: List[str] = ['unaffected', 'affected1', 'affected2', 'affected12'], prevalences: np.ndarray = None, data: np.ndarray = None, h2_first = True):
     """
     Infer the order of hypotheses for 2 conditions and 4 channels: ctrls, cases1, cases2, cases_both
     prevalences: Iterable[Union[int, float]]
         The list of prevalences for each of the condition columns (ex: ctrls, cases1, cases2, cases for both). Should be in the same order as the data columns
         The last element of the prevalences array should be comorbidity, if known
+    h2_first: Bool
+        If H2 (Unaffected_Affected) is in the column indexed 1 (2nd column, first being Unaffected_Unaffected)
     """
     hypotheses = {}
 
@@ -267,24 +461,41 @@ def get_assumed_order_for_2(probs: np.ndarray, data_columns: List[str] = ['unaff
         'unaffected': 'P(~D|V,H)',
         'affected1': 'P(D1|V,H)',
         'affected2': 'P(D2|V,H)',
-        'affected12': 'P(D12|V,H)'
+        'affected12': 'P(D12|V,H)',
+        'outlier': 'P(outlier)'
     }
+
+    orig_mapping = {}
 
     probs_mean = probs.mean(0)#round_it(probs.mean(0), 4)
     probs_mean_df = pd.DataFrame(probs_mean, dtype='float32', columns=[mapping[x] for x in data_columns])
 
     h0 = probs_mean_df['P(~D|V,H)'].idxmax()
+    orig_mapping[h0] = 0
     hypotheses[h0] = 'H0'
     h1 = (probs_mean_df['P(D1|V,H)'] - probs_mean_df['P(D2|V,H)']).idxmax() #(case1 > case2)
     hypotheses[h1] = 'H1'
+
+    if h2_first:
+        orig_mapping[h1] = 2
+    else:
+        orig_mapping[h1] = 1
+
     h2 = (probs_mean_df['P(D2|V,H)'] - probs_mean_df['P(D1|V,H)']).idxmax() #(case2 > case1)
     hypotheses[h2] = 'H2'
+
+    if h2_first:
+        orig_mapping[h2] = 1
+    else:
+        orig_mapping[h2] = 2
+
     h12 = (probs_mean_df['P(D12|V,H)']).idxmax()
     hypotheses[h12] = 'H12'
+    orig_mapping[h12] = 3
 
     probs_mean_df.index = [hypotheses[k] for k in probs_mean_df.index]
     
-    return np.array([h0, h1, h2, h12]), probs_mean_df
+    return np.array([h0, h1, h2, h12]), probs_mean_df, orig_mapping
 
 # this will only work for well-separated values
 # instead, we should be ordering by both probs and weight, maybe likelihood?
@@ -429,7 +640,7 @@ def get_assumed_order_bivariate(probs: np.ndarray, data: np.ndarray = None, data
 
     probs_mean = probs.mean(0)
     probs_mean_df = pd.DataFrame(probs_mean, dtype='float32', columns=[mapping[x] for x in data_columns])
-
+    
     pdiff = np.abs(probs_mean - prevalences)
     
     h0 = -1
@@ -454,9 +665,21 @@ def get_assumed_order_bivariate(probs: np.ndarray, data: np.ndarray = None, data
     h12 = (probs_mean_df['P(D12|V,H)']).idxmax()
     hypotheses[h12] = 'H12'
 
-    probs_mean_df.index = [hypotheses[k] for k in probs_mean_df.index]
+    indices = [h0, h1, h2, h12]
+
+    l = []
+    all_others = []
+    for i in probs_mean_df.index:
+        if i in hypotheses:
+            l.append(hypotheses[i])
+        else:
+            all_others.append(i)
+
+    print('probs_mean_df.index')
+
+    probs_mean_df.index = l + all_others
     
-    return np.array([h0, h1, h2, h12]), probs_mean_df
+    return np.array([h0, h1, h2, h12, *all_others]), probs_mean_df
 
 
 # ordered_probs = best_dirichlet_concentrations_exp2
@@ -481,26 +704,52 @@ def get_rho_bivariate(probs, weights, concentrations, observations: np.array, n_
     if prevalences is None:
         # Alternative estimate, using weighted posterior: (ordered_weights @ ordered_probs)
         prevalences = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
-        print("prevalence estimate", prevalences)
+        # print("prevalence estimate", prevalences)
+        prevalences2 = (ordered_weights @ ordered_probs)
+        print('posterior prevalence estimate', prevalences)
+        print('posterior prevalence estimate using our stuff', prevalences2)
+    else:
+        print("Prevalence passed: ", prevalences)
+        print("would have used as posterior prevalence estimate: ", (ordered_weights @ ordered_probs))
 
     if isinstance(n_samples, int):
+        print("Estimating sample breakdown using prevalences")
         # sample_proportions = (observations/observations.sum(1).reshape(observations.shape[0], 1)).mean(0)
         n_samples = prevalences * n_samples
-    
     alleles = n_samples*2
-    n_ctrls, n_one, n_two, n_both = alleles
-    n_ctrl1 = n_ctrls + n_two
-    n_ctrl2 = n_ctrls + n_one
-    n_case1 = n_one + n_both
-    n_case2 = n_two + n_both
+    alleles_ctrls, alleles_one_only, alleles_two_only, alleles_both = alleles
+    print("alleles", alleles)
 
-    i = 0
-    
+    alleles_ctrl1 = alleles_ctrls + alleles_two_only
+    alleles_ctrl2 = alleles_ctrls + alleles_one_only
+    alleles_case1 = alleles_one_only + alleles_both
+    alleles_case2 = alleles_two_only + alleles_both
+
+    P_D1 = prevalences[1]#(n_samples[3] + n_samples[1]) / (n_samples.sum())
+    P_D2 = prevalences[2]#(n_samples[3] + n_samples[2]) / (n_samples.sum())
+
+    thresh1 = Inv_Cumulative_Normal(1 - P_D1)
+    thresh2 = Inv_Cumulative_Normal(1 - P_D2)
+
+    print('P_D1', P_D1, 'P_D2', P_D2)
+
+    n_genes_used = 0
+
+    if not (type(true_architectures) is np.ndarray and true_architectures.size == len(observations)):
+        true_architectures = [None] * len(observations)
+
+    how_many_wrong = 0
+    how_many_right = 0
+    how_many_mixed_up_one_two = 0
+    how_many_mixed_up_both_and_one_or_two = 0
+    how_many_called_risk_when_nonrisk = 0
+    how_many_called_nonrisk_when_risk = 0
+        
     tot_post_neither = 0
     tot_post_one = 0
     tot_post_two = 0
     tot_post_both = 0
-    tot_post_all_d = 0
+    tot_post_affected = 0
     
     cov_sum = 0
     sigma1_mean_est = 0
@@ -514,36 +763,14 @@ def get_rho_bivariate(probs, weights, concentrations, observations: np.array, n_
     n_is_neither = 0
 
     inf_rows = 0
-    
-    P_D1 = prevalences[1]
-    P_D2 = prevalences[2]
-    thresh1 = Inv_Cumulative_Normal(1 - P_D1)
-    thresh2 = Inv_Cumulative_Normal(1 - P_D2)
-    n_genes_used = 0
-
-    if not (type(true_architectures) is np.ndarray and true_architectures.size == len(observations)):
-        true_architectures = [None] * len(observations)
-
+    print_out_architecture = []
     for i, obs in enumerate(observations):
         x_ctrl, x_one, x_two, x_both = obs
         
         L_D_given_z = (ordered_probs ** obs).prod(1)
-        # print('L_D_given_z', (ordered_probs ** obs))
-        # print('L_D_given_z', L_D_given_z)
-        
         P_z_i2 = np.multiply(ordered_weights, L_D_given_z)        
         P_z_i2 = P_z_i2/P_z_i2.sum()
 
-        # dirichlet_posterior_mean_probability = ((ordered_concentrations + obs)/(obs.sum() + ordered_concentrations.sum(1))).prod(1)
-        # print('dirichlet_posterior_mean_probability', dirichlet_posterior_mean_probability)
-        # v2 = np.exp(dm_model.log_prob(obs))
-        # v2 = np.multiply(ordered_weights, v2)
-        # v2 = v2/v2.sum()
-        # print('v2', v2, 'P_z_i2', P_z_i2)
-        # dirichlet_posterior_mean_probability = np.multiply(ordered_weights, dirichlet_posterior_mean_probability)
-        # print('dirichlet_posterior_mean_probability after multiply', dirichlet_posterior_mean_probability)
-        # dirichlet_posterior_mean_probability = dirichlet_posterior_mean_probability/dirichlet_posterior_mean_probability.sum()
-        
         the_architecture = np.argmax(P_z_i2)
         if the_architecture == 1:
             n_is_two += 1
@@ -553,70 +780,98 @@ def get_rho_bivariate(probs, weights, concentrations, observations: np.array, n_
             n_is_neither += 1
         elif the_architecture == 3:
             n_is_both += 1
-            
-        print("estimated genetic architecture", the_architecture, "real:", true_architectures[i])
-        # if the_architecture != 3:
+
+        if the_architecture == true_architectures[i]:
+            how_many_right += 1
+        else:
+            how_many_wrong += 1
+
+            if (the_architecture == 1 or the_architecture == 2):
+                if true_architectures[i] == 1 or true_architectures[i] == 2:
+                    how_many_mixed_up_one_two += 1
+                elif true_architectures[i] == 3:
+                    how_many_mixed_up_both_and_one_or_two += 1
+                else:
+                    how_many_called_risk_when_nonrisk += 1
+            elif the_architecture == 3:
+                if true_architectures[i] == 1 or true_architectures[i] == 2:
+                    how_many_mixed_up_both_and_one_or_two += 1
+                else:
+                    how_many_called_risk_when_nonrisk += 1
+
+            elif the_architecture == 0:
+                how_many_called_nonrisk_when_risk += 1
+
+        print_out_architecture.append([i, the_architecture, true_architectures[i], obs, P_z_i2])
+
+        post_neither, post_one, post_two, post_both, *outliers = P_z_i2
+        # print('outliers', outliers)
+
+        # if the_architecture == 0:
         #     continue
-                
-        post_neither, post_one, post_two, post_both = P_z_i2
-        # print('P_z_i2', P_z_i2, 'dirichlet_posterior_mean_probability', dirichlet_posterior_mean_probability)
-        if post_both < .01:
+
+        if post_both < .005:
             continue
 
         n_genes_used += 1
 
-        P_V_Ctrl1 = (x_ctrl + x_two) / n_ctrl1
-        P_V_Ctrl2 = (x_ctrl + x_one) / n_ctrl2
-        P_V_Case1 = (x_one + x_both) / n_case1
-        P_V_Case2 = (x_two + x_both) / n_case2
+        P_V_Ctrl1 = (x_ctrl + x_two) / alleles_ctrl1
+        P_V_Ctrl2 = (x_ctrl + x_one) / alleles_ctrl2
+        P_V_Case1 = (x_one + x_both) / alleles_case1
+        P_V_Case2 = (x_two + x_both) / alleles_case2
 
-        P_V    = P_V_Ctrl1 * (1 - P_D1) + P_V_Case1 * P_D1
-        P_D1_V = P_V_Case1 * P_D1 / P_V
+        # P_V_Ctrl1 = 1 - x_on1 + x_both
+        P_V_1  = P_V_Ctrl1 * (1 - P_D1) + P_V_Case1 * P_D1
+        P_D1_V = P_V_Case1 * P_D1 / P_V_1
         sigma1 = thresh1 - Inv_Cumulative_Normal(1 - P_D1_V)
 
-        P_V    = P_V_Ctrl2 * (1 - P_D2) + P_V_Case2 * P_D2
-        P_D2_V = P_V_Case2 * P_D2 / P_V        
+        P_V_2  = P_V_Ctrl2 * (1 - P_D2) + P_V_Case2 * P_D2
+        P_D2_V = P_V_Case2 * P_D2 / P_V_2      
         sigma2 = thresh2 - Inv_Cumulative_Normal(1 - P_D2_V)
-        
         if np.isinf(sigma2) or np.isinf(sigma1):
             inf_rows += 1
-            # print('obs', obs)
-            # print('P_D1_V', P_D1_V, 'P_V_Case1', P_V_Case1)
-            # print('P_D2_V', P_D2_V, 'P_V_Case2', P_V_Case2)
             continue
+        # print("arch vs PD", the_architecture, P_D1_V, P_D2_V)
+
+        # print("P_D2_V", P_D2_V, "P_V_2", P_V_2, "P_D1_V", P_D1_V, "P_V_1", P_V_1)
 
         tot_post_neither += post_neither
         tot_post_one += post_one + post_both
         tot_post_two += post_two + post_both
         tot_post_both += post_both
+        tot_post_affected += post_one + post_two + post_both
 
-        tot_post_all_d += post_one + post_two + post_both
+        # print("posts", post_one, post_two, post_both)
     
-        sigma1_mean_est += (post_both) * sigma1
-        sigma1_squared_est += (post_both) * sigma1 * sigma1
+        sigma1_mean_est += (post_one + post_both) * sigma1
+        sigma1_squared_est += (post_one + post_both) * sigma1 * sigma1
         
-        sigma2_mean_est += (post_both) * sigma2
-        sigma2_squared_est += (post_both) * sigma2 * sigma2
+        sigma2_mean_est += (post_two + post_both) * sigma2
+        sigma2_squared_est += (post_two + post_both) * sigma2 * sigma2
         
         cov_sum += post_both * sigma1 * sigma2
      
         i += 1
 
-    sigma1_mean_est_f = sigma1_mean_est / tot_post_both
-    sigma1_squared_est_f = sigma1_squared_est / tot_post_both
-    var1_est = (sigma1_squared_est_f - sigma1_mean_est_f**2)#/tot_post_both
+    sigma1_mean_est_f = sigma1_mean_est / tot_post_one
+    sigma1_squared_est_f = sigma1_squared_est / tot_post_one
+    var1_est = (sigma1_squared_est_f - sigma1_mean_est_f**2) 
 
-    sigma2_mean_est_f = sigma2_mean_est / tot_post_both
-    sigma2_squared_est_f = sigma2_squared_est / tot_post_both
-    var2_est = (sigma2_squared_est_f - sigma2_mean_est_f**2)#/tot_post_both
+    sigma2_mean_est_f = sigma2_mean_est / tot_post_two
+    sigma2_squared_est_f = sigma2_squared_est / tot_post_two
+    var2_est = (sigma2_squared_est_f - sigma2_mean_est_f**2) 
 
     cov_sum_f = cov_sum / tot_post_both
-    cov = cov_sum_f - sigma1_mean_est_f*sigma2_mean_est_f#*tot_post_both
+    cov = cov_sum_f - sigma1_mean_est_f*sigma2_mean_est_f
 
     rho = cov / (var1_est * var2_est)**.5
 
     print('n_genes_used', n_genes_used)
+    print('tot_post_one', tot_post_one)
+    print('tot_post_two', tot_post_two)
+    print('tot_post_both', tot_post_both)
     print('inf_rows', inf_rows)
+    print('cov_sum_f', cov_sum_f)
     print('sigma1_mean', sigma1_mean_est_f)
     print('sigma1_^2_mean', sigma1_squared_est_f)
     print('sigma2_mean', sigma2_mean_est_f)
@@ -624,4 +879,11 @@ def get_rho_bivariate(probs, weights, concentrations, observations: np.array, n_
     print('cov', cov)
     print('rho', rho)
 
-    return var1_est, var2_est, cov, rho
+    print("how_many_wrong", how_many_wrong)
+    print("how_many_right", how_many_right)
+    print("how_many_mixed_up_one_two", how_many_mixed_up_one_two)
+    print("how_many_mixed_up_both_and_one_or_two", how_many_mixed_up_both_and_one_or_two)
+    print("how_many_called_risk_when_nonrisk", how_many_called_risk_when_nonrisk)
+    print("how_many_called_nonrisk_when_risk", how_many_called_nonrisk_when_risk)
+
+    return var1_est, var2_est, cov, rho, pd.DataFrame(print_out_architecture, columns=["i", "estimated genetic architecture", "real", "obs", 'P_z_i2'])
