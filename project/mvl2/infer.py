@@ -20,7 +20,7 @@ from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
 from numpyro.distributions.conjugate import _log_beta_1
 
-from scipy.stats import norm
+from scipy.stats import norm, binom
 
 Inv_Cumulative_Normal = norm.ppf
 
@@ -29,9 +29,95 @@ import pandas as pd
 import sigfig
 import jax
 
-class TruncatedMultinomial(Multinomial):
-    def __init__(self, *args, **kwargs):
+class TruncatedMultinomialProbs(MultinomialProbs):
+    arg_constraints = {
+        "probs": constraints.simplex,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, k: float = -500, **kwargs):
         super().__init__(*args, **kwargs)
+        self.k = k
+
+    def log_prob(self, value):
+        ll = super().log_prob(value)
+        print("value", value)
+        print("ll shape", ll.shape)
+        print("ll", ll)
+        return jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+
+class ZeroInflatedTruncatedMultinomial(MultinomialProbs):
+    arg_constraints = {
+        "probs": constraints.simplex,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, gate_n: int, gate_pop_af: float, k: float = -500, **kwargs):
+        super().__init__(*args, **kwargs)
+        prob_non_zero = 1 - binom.ppf(0, gate_n, gate_pop_af)
+        self.gate = prob_non_zero
+        print('prob_non_zero', prob_non_zero)
+
+    def log_prob(self, value):
+        ll = super().log_prob(value)
+        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+        ll = jnp.log1p(-self.gate) + ll
+
+        ll = jnp.where(value == 0, jnp.log(self.gate + jnp.exp(ll)), ll)
+        print("value", value)
+        print("ll shape", ll.shape)
+        print("ll", ll)
+        return ll
+
+    # @constraints.dependent_property(is_discrete=True, event_dim=0)
+    # def support(self):
+    #     return self.base_dist.support
+
+    @numpyro.distributions.util.lazy_property
+    def mean(self):
+        raise NotImplementedError
+        # return (1 - self.gate) * self.base_dist.mean
+
+    @numpyro.distributions.util.lazy_property
+    def variance(self):
+        raise NotImplementedError
+        # return (1 - self.gate) * (
+        #     self.base_dist.mean**2 + self.base_dist.variance
+        # ) - self.mean**2
+
+class TruncatedDirichlet(Dirichlet):
+    arg_constraints = {
+        "probs": constraints.simplex,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, k: float = -500, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k = jnp.array([k]*self.concentration.shape[0])
+        print("self.k", self.k)
+
+    def log_prob(self, value):
+        ll = super().log_prob(value)
+        print("ll", ll)
+        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+        print("ll after", ll)
+        return ll
+
+class ZeroInflatedTruncatedDirichlet(Dirichlet):
+    arg_constraints = {
+        "probs": constraints.simplex,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, k: float = -500, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.k = k
+
+    def log_prob(self, value):
+        ll = super().log_prob(value)
+        ll_sum = ll.sum()
+        print("ll", )
+        return jnp.where(jnp.isnan(ll_sum) | (ll_sum < self.k), self.k, ll)
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
 ArrayLike = npt.ArrayLike
@@ -216,7 +302,7 @@ def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = 
         pz = numpyro.deterministic("pz", mix_weights(beta))
         z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
 
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
+        return numpyro.sample("obs", ZeroInflatedTruncatedMultinomial(probs=probs[z], gate_n=jnp.array([184_710, 7300,7300,690]), gate_af=1e-4, k=-150), obs=data)
 
 def modelPoisson(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
                                   shared_dirichlet_prior: bool = False,
