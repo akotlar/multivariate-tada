@@ -20,7 +20,7 @@ from numpyro.distributions import *
 from numpyro.infer import MCMC, NUTS
 from numpyro.distributions.conjugate import _log_beta_1
 
-from scipy.stats import norm, binom
+from scipy.stats import norm, binom, poisson
 
 Inv_Cumulative_Normal = norm.ppf
 
@@ -35,15 +35,12 @@ class TruncatedMultinomialProbs(MultinomialProbs):
         "total_count": constraints.nonnegative_integer,
     }
 
-    def __init__(self, *args, k: float = -500, **kwargs):
+    def __init__(self, *args, k: float = -500., **kwargs):
         super().__init__(*args, **kwargs)
-        self.k = k
+        self.k = float(k)
 
     def log_prob(self, value):
         ll = super().log_prob(value)
-        print("value", value)
-        print("ll shape", ll.shape)
-        print("ll", ll)
         return jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
 
 class ZeroInflatedTruncatedMultinomial(MultinomialProbs):
@@ -54,19 +51,18 @@ class ZeroInflatedTruncatedMultinomial(MultinomialProbs):
 
     def __init__(self, *args, gate_n: int, gate_pop_af: float, k: float = -500, **kwargs):
         super().__init__(*args, **kwargs)
-        prob_non_zero = 1 - binom.ppf(0, gate_n, gate_pop_af)
-        self.gate = prob_non_zero
-        print('prob_non_zero', prob_non_zero)
+        prob_zero = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+        
+        self.gate = jnp.expand_dims(prob_zero, 1)
+
+        self.k = k
 
     def log_prob(self, value):
         ll = super().log_prob(value)
-        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
-        ll = jnp.log1p(-self.gate) + ll
+        ll = jnp.where(value.T == 0, jnp.log(self.gate + jnp.exp(ll)), jnp.log1p(-self.gate) + ll)
 
-        ll = jnp.where(value == 0, jnp.log(self.gate + jnp.exp(ll)), ll)
-        print("value", value)
-        print("ll shape", ll.shape)
-        print("ll", ll)
+        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+
         return ll
 
     # @constraints.dependent_property(is_discrete=True, event_dim=0)
@@ -94,13 +90,12 @@ class TruncatedDirichlet(Dirichlet):
     def __init__(self, *args, k: float = -500, **kwargs):
         super().__init__(*args, **kwargs)
         self.k = jnp.array([k]*self.concentration.shape[0])
-        print("self.k", self.k)
 
     def log_prob(self, value):
         ll = super().log_prob(value)
-        print("ll", ll)
+
         ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
-        print("ll after", ll)
+
         return ll
 
 class ZeroInflatedTruncatedDirichlet(Dirichlet):
@@ -109,15 +104,21 @@ class ZeroInflatedTruncatedDirichlet(Dirichlet):
         "total_count": constraints.nonnegative_integer,
     }
 
-    def __init__(self, *args, k: float = -500, **kwargs):
+    def __init__(self, *args, gate_n: float, gate_pop_af: float, data: jnp.array, k: float = -500., **kwargs):
         super().__init__(*args, **kwargs)
-        self.k = k
+        prob_zero = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+        
+        self.gate = jnp.expand_dims(prob_zero, 1)
+        self.k = float(k)
+        self.data = data
 
     def log_prob(self, value):
         ll = super().log_prob(value)
-        ll_sum = ll.sum()
-        print("ll", )
-        return jnp.where(jnp.isnan(ll_sum) | (ll_sum < self.k), self.k, ll)
+        ll = jnp.where(self.data == 0, jnp.log(self.gate + jnp.exp(ll)), jnp.log1p(-self.gate) + ll)
+
+        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+
+        return ll
 
 numpyro.set_host_device_count(multiprocessing.cpu_count())
 ArrayLike = npt.ArrayLike
@@ -155,8 +156,12 @@ def mix_weights(beta: jnp.array):
 
 ########################## Gamma prior on dirichlet concentrations 
 # https://arxiv.org/pdf/1708.08177.pdf
-def method_moments_estimator_gamma_shape_rate(data: ArrayLike):
-    empirical_prevalence_estimate = data.mean(0)
+def method_moments_estimator_gamma_shape_rate(empirical_prevalence_estimate: ArrayLike = None, data: ArrayLike = None):
+    assert data is not None or empirical_prevalence_estimate is not None
+
+    if empirical_prevalence_estimate is None:
+        empirical_prevalence_estimate = data.mean(0)
+
     sd = data.std(0)
 
     moment_methods_shape = empirical_prevalence_estimate**2 / sd**2
@@ -204,7 +209,7 @@ def modelLKJ(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
         # # print('L_Omega', L_Omega)
         # # print('cov_est', cov_est)
         # mu = np.zeros(d)if gamma_shape is None:
-        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data=data)
 
         scale = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
 
@@ -227,46 +232,10 @@ def modelLKJ(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
         return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
 
-# def modelLN(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
-#                                   shared_dirichlet_prior: bool = False,
-#                                   gamma_shape: Union[float, ArrayLike] = None,
-#                                   gamma_rate: Union[float, ArrayLike] = None):
-#     print("running")
-#     """
-#         Parameters
-#         ----------
-#         shared_dirichlet_prior: bool
-#             Whether each component should share the same Gamma prior.
-#             This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
-#     """
-#     # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
-#     # print("x", x)
-#     # alpha = numpyro.param("alpha", alpha)
-#     with numpyro.plate("beta_plate", k_hypotheses-1):
-#         beta = numpyro.sample("beta", Beta(1, alpha))
-    
-#     # Dirichlet prior 𝑝(𝜃|𝛼) is replaced by a logistic-normal distribution
-#     probs = data / data.sum(1).reshape(data.shape[0], 1)
-#     mean_est = jnp.mean(probs)#jnp.log(jnp.mean(data, axis=0)).reshape(data.shape[1], 1)
-#     # print('probs', probs)
-#     # print('mean_est', mean_est)
-#     cov_est = jnp.cov(probs.T)
-#     print('cov_est', cov_est)
-#     logtheta = numpyro.sample("logtheta", MultivariateNormal(mean_est, cov_est))
-#     theta = jax.nn.softmax(logtheta, -1)
-#     with numpyro.plate("prob_plate", k_hypotheses):
-#         # print('cov_est', cov_est)
-
-        
-        
-#         # theta = jnp.exp(logtheta)
-#         # print('theta', theta.shape)
-
-#     with numpyro.plate("data", data.shape[0]):
-#         z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-#         return numpyro.sample("obs", Multinomial(probs=theta[z]), obs=data)
-
-def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = .05,
+def model(data: ArrayLike, num_data: int, N: ArrayLike, prior_pop_af: float,
+                                  dirichlet_min_ll: float = -20,
+                                  multinomial_min_ll: float = -200,
+                                  k_hypotheses: int = 4, alpha: float = .05,
                                   shared_dirichlet_prior: bool = False,
                                   gamma_shape: Union[float, ArrayLike] = None,
                                   gamma_rate: Union[float, ArrayLike] = None):
@@ -277,9 +246,6 @@ def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = 
             Whether each component should share the same Gamma prior.
             This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
     """
-    # x = numpyro.sample('x', ImproperUniform(constraints.ordered_vector, (), event_shape=(4,)))
-    # print("x", x)
-    # alpha = numpyro.param("alpha", alpha)
     with numpyro.plate("beta_plate", k_hypotheses-1):
         alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
         beta = numpyro.sample("beta", Beta(1, alpha))
@@ -287,7 +253,7 @@ def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = 
     with numpyro.plate("prob_plate", k_hypotheses):
         if gamma_shape is None:
             assert gamma_rate is None and data is not None
-            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data)
+            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data=data)
         assert gamma_shape is not None and gamma_rate is not None
         gamma_rate = numpyro.deterministic('gamma_rate', gamma_rate)
         gamma_shape = numpyro.deterministic('gamma_shape', gamma_shape)
@@ -296,13 +262,14 @@ def model(data: ArrayLike, num_data: int, k_hypotheses: int = 4, alpha: float = 
             concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
         else:
             concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
-        probs = numpyro.sample("probs", Dirichlet(concentrations))
+
+        probs = numpyro.sample('probs', TruncatedDirichlet(concentrations, k=dirichlet_min_ll))
 
     with numpyro.plate("data", num_data):
         pz = numpyro.deterministic("pz", mix_weights(beta))
         z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
 
-        return numpyro.sample("obs", ZeroInflatedTruncatedMultinomial(probs=probs[z], gate_n=jnp.array([184_710, 7300,7300,690]), gate_af=1e-4, k=-150), obs=data)
+        return numpyro.sample("obs", ZeroInflatedTruncatedMultinomial(probs=probs[z], gate_n=N, gate_pop_af=prior_pop_af, k=multinomial_min_ll), obs=data)
 
 def modelPoisson(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
                                   shared_dirichlet_prior: bool = False,
