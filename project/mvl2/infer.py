@@ -16,7 +16,7 @@ import numpy as np
 import numpy.typing as npt
 import numpyro
 from numpyro.distributions import *
-from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO, autoguide
+from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO, autoguide, DiscreteHMCGibbs
 
 import pandas as pd
 
@@ -53,7 +53,48 @@ class TruncatedMultinomial(MultinomialProbs):
         #     self.base_dist.mean**2 + self.base_dist.variance
         # ) - self.mean**2
 
-class ZeroInflatedTruncatedMultinomial(MultinomialProbs):
+def ZeroInflatedTruncatedMultinomial(probs=None, logits=None, *args, **kwargs):
+    if probs is not None:
+        return ZeroInflatedTruncatedMultinomialProbs(probs, *args, **kwargs)
+    elif logits is not None:
+        return ZeroInflatedTruncatedMultinomialLogits(logits, *args, **kwargs)
+    else:
+        raise ValueError("One of `probs` or `logits` must be specified.")
+
+class ZeroInflatedTruncatedMultinomialLogits(MultinomialLogits):
+    arg_constraints = {
+        "logits": constraints.real_vector,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, gate: ArrayLike = None, gate_n: int = None, gate_pop_af: float = None, k: float = -500, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if gate is not None:
+            self.gate = gate
+        else:
+            assert gate_n is not None and gate_pop_af is not None
+            self.gate = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+
+        self.k = k
+
+    def log_prob(self, value):
+        log_prob = super().log_prob(value).T
+        print('self.gate', self.gate)
+        print('gate.shape', self.gate.shape)
+        print('log_prob', log_prob)
+        print("log_prob shape", log_prob.shape)
+        # print("log_prob min", log_prob.min())
+        # ll = jnp.where(value.T == 0, jnp.log(self.gate + jnp.exp(ll)), jnp.log1p(-self.gate) + ll)
+
+        # ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+        # log_prob = jnp.log1p(-self.gate) + log_prob
+
+        log_prob = jnp.where(value.T == 0, jnp.log(self.gate + jnp.exp(log_prob)), jnp.log1p(-self.gate) + log_prob)
+
+        return jnp.where(jnp.isnan(log_prob) | (log_prob < self.k), self.k, log_prob).T
+
+class ZeroInflatedTruncatedMultinomialProbs(MultinomialProbs):
     arg_constraints = {
         "probs": constraints.simplex,
         "total_count": constraints.nonnegative_integer,
@@ -61,13 +102,14 @@ class ZeroInflatedTruncatedMultinomial(MultinomialProbs):
 
     def __init__(self, *args, gate: ArrayLike = None, gate_n: int = None, gate_pop_af: float = None, k: float = -500, **kwargs):
         super().__init__(*args, **kwargs)
-        prob_zero = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+        
 
-        if gate:
+        if gate is not None:
             self.gate = gate
         else:
             assert gate_n is not None and gate_pop_af is not None
-            self.gate = jnp.expand_dims(prob_zero, 1)
+            prob_zero = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+            self.gate = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
 
         self.k = k
 
@@ -298,6 +340,176 @@ def method_moments_estimator_gamma_shape_rate(empirical_prevalence_estimate: Arr
 
 #         return numpyro.sample("obs", ZeroInflatedTruncatedMultinomial(probs=probs[z], gate_n=N, gate_pop_af=prior_pop_af, k=multinomial_min_ll), obs=data)
 
+class ZeroInflatedTruncatedMultinomialWorking(MultinomialProbs):
+    arg_constraints = {
+        "probs": constraints.simplex,
+        "total_count": constraints.nonnegative_integer,
+    }
+
+    def __init__(self, *args, gate_n: int, gate_pop_af: float, k: float = -500, **kwargs):
+        super().__init__(*args, **kwargs)
+        prob_zero = jax.scipy.stats.poisson.pmf(0, gate_n * gate_pop_af)
+        
+        self.gate = jnp.expand_dims(prob_zero, 1)
+
+        self.k = k
+
+    def log_prob(self, value):
+        ll = super().log_prob(value)
+        ll = jnp.where(value.T == 0, jnp.log(self.gate + jnp.exp(ll)), jnp.log1p(-self.gate) + ll)
+
+        ll = jnp.where(jnp.isnan(ll) | (ll < self.k), self.k, ll)
+
+        return ll
+
+    # @constraints.dependent_property(is_discrete=True, event_dim=0)
+    # def support(self):
+    #     return self.base_dist.support
+
+    @numpyro.distributions.util.lazy_property
+    def mean(self):
+        raise NotImplementedError
+        # return (1 - self.gate) * self.base_dist.mean
+
+    @numpyro.distributions.util.lazy_property
+    def variance(self):
+        raise NotImplementedError
+        # return (1 - self.gate) * (
+        #     self.base_dist.mean**2 + self.base_dist.variance
+        # ) - self.mean**2
+
+def model_generalized_dirichlet_discrete(data: ArrayLike,
+        N: ArrayLike,
+        prior_pop_af: float,
+        num_data: int = None,
+        dirichlet_min_ll: float = -20,
+        multinomial_min_ll: float = -200,
+        k_hypotheses: int = 4,
+        alpha: float = .001,
+        shared_dirichlet_prior: bool = False,
+        gamma_shape: Union[float, ArrayLike] = None,
+        gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # to allow prior predictive checks
+    if num_data is None:
+        num_data = data.shape[0]
+        num_phenotypes = data.shape[1]
+    
+    
+    alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", num_phenotypes-1):
+        with numpyro.plate('phenotype_beta_plate', k_hypotheses):
+            alpha_param = numpyro.sample('alpha_pheno', Uniform(1,10))
+            beta_param = numpyro.sample('beta_pheno', Uniform(1,10))
+            beta_gd = numpyro.sample('beta_gd', Beta(alpha_param, beta_param))
+        
+        probs = numpyro.deterministic('p', mix_weights(beta_gd))
+        
+    with numpyro.plate("data", num_data):
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz))
+
+        return numpyro.sample("obs", Multinomial(probs=probs[z],), obs=data)
+
+def model_generalized_dirichlet(data: ArrayLike,
+        N: ArrayLike,
+        prior_pop_af: float,
+        num_data: int = None,
+        dirichlet_min_ll: float = -20,
+        multinomial_min_ll: float = -200,
+        k_hypotheses: int = 4,
+        alpha: float = .001,
+        shared_dirichlet_prior: bool = False,
+        gamma_shape: Union[float, ArrayLike] = None,
+        gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # to allow prior predictive checks
+    if num_data is None:
+        num_data = data.shape[0]
+        num_phenotypes = data.shape[1]
+    
+    
+    alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", num_phenotypes-1):
+        with numpyro.plate('phenotype_beta_plate', k_hypotheses):
+            alpha_param = numpyro.sample('alpha_pheno', Uniform(1,10))
+            beta_param = numpyro.sample('beta_pheno', Uniform(1,10))
+            beta_gd = numpyro.sample('beta_gd', Beta(alpha_param, beta_param))
+        
+        probs = numpyro.deterministic('p', mix_weights(beta_gd))
+        
+    with numpyro.plate("data", num_data):
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz), infer={'enumerate': 'parallel'})
+
+        return numpyro.sample("obs", Multinomial(probs=probs[z],), obs=data)
+
+def model_specific_enumeration(data: ArrayLike,
+        N: ArrayLike,
+        prior_pop_af: float,
+        num_data: int = None,
+        dirichlet_min_ll: float = -20,
+        multinomial_min_ll: float = -200,
+        k_hypotheses: int = 4,
+        alpha: float = .001,
+        shared_dirichlet_prior: bool = False,
+        gamma_shape: Union[float, ArrayLike] = None,
+        gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # to allow prior predictive checks
+    if num_data is None:
+        num_data = data.shape[0]
+        num_phenotypes = data.shape[1]
+    
+    
+    alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+
+    c1 = jnp.ones(num_phenotypes)
+    c2 = jnp.array([1., r2, 1., r2])
+    c3 = jnp.array([1., 1., r3, r3])
+    c4 = jnp.array([1. - (r2b + r2c + r4), r2, r3, r4]) #dirichlet with 2 shared components
+    
+
+    with numpyro.plate("prob_plate", num_phenotypes-1):
+        with numpyro.plate('phenotype_beta_plate', k_hypotheses):
+            alpha_param = numpyro.sample('alpha_pheno', Uniform(1,10))
+            beta_param = numpyro.sample('beta_pheno', Uniform(1,10))
+            beta_gd = numpyro.sample('beta_gd', Beta(alpha_param, beta_param))
+        
+        probs = numpyro.deterministic('p', mix_weights(beta_gd))
+        
+    with numpyro.plate("data", num_data):
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz), infer={'enumerate': 'parallel'})
+
+        return numpyro.sample("obs", Multinomial(probs=probs[z],), obs=data)
 
 def model(data: ArrayLike,
         N: ArrayLike,
@@ -338,10 +550,66 @@ def model(data: ArrayLike,
         else:
             concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
         # t = N/N.sum()
-        probs = numpyro.sample('probs', Dirichlet(concentrations))
+        probs = numpyro.sample('probs', Dirichlet(concentrations).to_event(1))
+        print('prior_pop_afff', prior_pop_af)
+        prob_zero = numpyro.sample('zero_inflation_prob',TruncatedNormal(prior_pop_af, 1, lower=0, upper=1))
+        print('probs', probs)
+        print('prob_zero', prob_zero)
+    # mixing_dist = Categorical(mix_weights(beta))
+    # component_dist = Multinomial(logits=probs)
+    
+    with numpyro.plate("data", num_data):
+        
+
+        pz = numpyro.deterministic("pz", mix_weights(beta))
+        z = numpyro.sample("z", Categorical(pz), infer={"enumerate": "parallel"})
+
+        return numpyro.sample("obs", ZeroInflatedTruncatedMultinomialWorking(probs=probs[z],gate_n=N,gate_pop_af=prob_zero, k = -2000), obs=data)
+
+
+def model3(data: ArrayLike,
+        N: ArrayLike,
+        prior_pop_af: float,
+        num_data: int = None,
+        dirichlet_min_ll: float = -20,
+        multinomial_min_ll: float = -200,
+        k_hypotheses: int = 4,
+        alpha: float = .05,
+        shared_dirichlet_prior: bool = False,
+        gamma_shape: Union[float, ArrayLike] = None,
+        gamma_rate: Union[float, ArrayLike] = None):
+    """
+        Parameters
+        ----------
+        shared_dirichlet_prior: bool
+            Whether each component should share the same Gamma prior.
+            This results in fewer parameters to estimate, and may perform better when the genetic architecture allows for it.
+    """
+    # to allow prior predictive checks
+    if num_data is None:
+        num_data = data.shape[0]
+
+    with numpyro.plate("beta_plate", k_hypotheses-1):
+        alpha = numpyro.deterministic('alpha', get_alpha(k_hypotheses, alpha))
+        beta = numpyro.sample("beta", Beta(1, alpha))
+
+    with numpyro.plate("prob_plate", k_hypotheses):
+        if gamma_shape is None:
+            assert gamma_rate is None and data is not None
+            gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data=data)
+        assert gamma_shape is not None and gamma_rate is not None
+        gamma_rate = numpyro.deterministic('gamma_rate', gamma_rate)
+        gamma_shape = numpyro.deterministic('gamma_shape', gamma_shape)
+
+        if shared_dirichlet_prior:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
+        else:
+            concentrations = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate).to_event(1))
+        # t = N/N.sum()
+        probs = jax.nn.softmax(numpyro.sample('probs', Normal(jnp.zeros(k_hypotheses), concentrations)))
         print('probs', probs)
     mixing_dist = Categorical(mix_weights(beta))
-    component_dist = ZeroInflatedTruncatedMultinomial(probs=probs, gate_n=N, gate_pop_af=prior_pop_af, k=multinomial_min_ll)
+    component_dist = Multinomial(logits=probs)
     with numpyro.plate("data", num_data):
         
 
@@ -432,11 +700,21 @@ def infer(random_key: random.PRNGKey,
           max_tree_depth: int = 10,
           thinning: int = 1,
           print_diagnostics: bool = True,
-          extra_fields: Tuple['str'] = ("potential_energy", "energy", "accept_prob", "mean_accept_prob")) -> MCMC:
-    kernel = NUTS(model, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
+          discrete_hmc: bool = False,
+          extra_fields: Tuple['str'] = None) -> MCMC:
+    if discrete_hmc:
+        kernel = DiscreteHMCGibbs(NUTS(model, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth))
+
+        if extra_fields is None:
+            extra_fields = ("hmc_state.potential_energy", "hmc_state.energy", "hmc_state.accept_prob", "hmc_state.mean_accept_prob")
+    else:
+        kernel = NUTS(model, target_accept_prob=target_accept_prob, max_tree_depth=max_tree_depth)
+        if extra_fields is None:
+            extra_fields = ("potential_energy", "energy", "accept_prob", "mean_accept_prob")
     """
     "max_tree_depth": values less than 10 give very bad results
     """
+    print('kernel', kernel)
     assert max_tree_depth >= 10
 
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, jit_model_args=jit_model_args, num_chains=num_chains, chain_method=chain_method, thinning=thinning)
