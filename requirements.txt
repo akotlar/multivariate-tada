@@ -17,7 +17,7 @@ blessed==1.19.1
 brotlipy==0.7.0
 cachetools==4.2.1
 causalgraphicalmodels==0.0.4
-certifi==2021.10.8
+certifi==2022.12.7
 cffi @ file:///home/conda/feedstock_root/build_artifacts/cffi_1636046063618/work
 cftime==1.4.1
 chardet @ file:///tmp/build/80754af9/chardet_1605303185383/work
