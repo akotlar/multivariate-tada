@@ -7,7 +7,7 @@ import multiprocessing
 import uuid
 from typing import List, Dict
 
-import dill
+import cloudpickle
 
 from jax import random
 import jax.numpy as jnp
@@ -775,7 +775,7 @@ def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str 
     os.mkdir(folder)
 
     with open(f"{folder}/samples.pickle", "wb") as f:
-        dill.dump(mcmc.get_samples(), f)
+        cloudpickle.dump(mcmc.get_samples(), f)
 
     with open(f"{folder}/mcmc.pickle", "wb") as f:
         mcmc_to_save = copy.deepcopy(mcmc)
@@ -783,10 +783,10 @@ def run(random_key, run_params, pickle_results: bool = True, folder_prefix: str 
         mcmc_to_save.sampler._init_fn = None  # pylint: disable=protected-access
         mcmc_to_save.sampler._constrain_fn = None  # pylint: disable=protected-access
         mcmc_to_save._cache = {}  # pylint: disable=protected-access
-        dill.dump(mcmc_to_save, f)
+        cloudpickle.dump(mcmc_to_save, f)
 
     with open(f"{folder}/run_params.pickle", "wb") as f:
-        dill.dump(run_params, f)
+        cloudpickle.dump(run_params, f)
 
     return mcmc
 
@@ -1021,7 +1021,7 @@ def select_components(weights: np.array, threshold: float = .01):
 def get_run_params_data(folder: str) -> Tuple[dict, dict]:
     run_params = None
     with open(os.path.join(folder, "run_params.pickle"), 'rb') as file:
-        run_params = dill.load(file)
+        run_params = cloudpickle.load(file)
 
     return run_params
 

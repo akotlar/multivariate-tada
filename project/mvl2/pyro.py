@@ -8,7 +8,7 @@ import uuid
 
 import torch
 import numpy as np
-import dill
+import cloudpickle
 
 import pyro
 from pyro.distributions import Exponential
@@ -186,7 +186,7 @@ def run(run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
     # os.mkdir(folder)
 
     # with open(f"{folder}/inferred_params.pickle", "wb") as f:
-    #     dill.dump(inferred_params, f)
+    #     cloudpickle.dump(inferred_params, f)
 
     # with open(f"{folder}/mcmc.pickle", "wb") as f:
     #     mcmc_to_save = copy.deepcopy(mcmc)
@@ -194,13 +194,13 @@ def run(run_params, folder_prefix: str = "") -> Tuple[MCMC, Tuple]:
     #     mcmc_to_save.sampler._init_fn = None  # pylint: disable=protected-access
     #     mcmc_to_save.sampler._constrain_fn = None  # pylint: disable=protected-access
     #     mcmc_to_save._cache = {}  # pylint: disable=protected-access
-    #     dill.dump(mcmc_to_save, f)
+    #     cloudpickle.dump(mcmc_to_save, f)
 
     # with open(f"{folder}/sim_data.pickle", "wb") as f:
-    #     dill.dump(sim_data, f)
+    #     cloudpickle.dump(sim_data, f)
 
     # with open(f"{folder}/run_params.pickle", "wb") as f:
-    #     dill.dump(run_params, f)
+    #     cloudpickle.dump(run_params, f)
 
     # return mcmc, inferred_params
 
@@ -223,11 +223,11 @@ def select_components(weights: np.array, threshold: float = .01):
 def get_run_params_data(folder: str) -> Tuple[dict, dict]:
     run_params = None
     with open(os.path.join(folder, "run_params.pickle"), 'rb') as file:
-        run_params = dill.load(file)
+        run_params = cloudpickle.load(file)
 
     sim_data = None
     with open(os.path.join(folder, "sim_data.pickle"), 'rb') as file:
-        sim_data = dill.load(file)
+        sim_data = cloudpickle.load(file)
         
     return run_params, sim_data
 
