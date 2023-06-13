@@ -1,5 +1,5 @@
 --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-jax[cuda12_pip]
+jax[cuda11_pip]
 numpyro[cuda]==0.12.1
 funsor==0.4.5
 cloudpickle==2.2.1
@@ -8,7 +8,7 @@ scipy==1.10.1
 numpy==1.24.3
 opt-einsum==3.3.0
 --extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.0.1+cu118
+torch==2.0.1
 pyper==1.1.2
 tqdm==4.65.0
 matplotlib==3.7.1
