@@ -18,7 +18,7 @@ else
 fi
 
 echo -e "\n====                         Installing Python requirements                             ====\n"
-find . -name 'requirements.txt' -exec pip install -q -r {} \;
+find . -name 'requirements.txt' -exec pip install --upgrade -q -r {} \;
 echo -e "\n====                         Installing Python development requirements                 ====\n"
-find . -name 'requirements-dev.txt' -exec pip install -q -r {} \;
+find . -name 'requirements-dev.txt' -exec pip install --upgrade -q -r {} \;
 echo -e "\n====                                       Done                                         ====\n"

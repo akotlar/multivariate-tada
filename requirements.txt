@@ -12,8 +12,5 @@ torch==2.0.1+cu118
 pyper==1.1.2
 tqdm==4.65.0
 matplotlib==3.7.1
-arviz==0.15.1
 seaborn==0.12.2
-ipywidgets==8.0.6
-widgetsnbextension==4.0.7
-jupyterlab==4.0.2
+arviz==0.15.1
