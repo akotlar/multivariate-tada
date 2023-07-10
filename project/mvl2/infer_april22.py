@@ -169,69 +169,6 @@ def method_moments_estimator_gamma_shape_rate(empirical_prevalence_estimate: Arr
 
     return moment_methods_shape, moment_methods_rate
 
-def modelLKJ(data: ArrayLike = None, k_hypotheses: int = 4, alpha: float = .05,
-                                  shared_dirichlet_prior: bool = False,
-                                  gamma_shape: Union[float, ArrayLike] = None,
-                                  gamma_rate: Union[float, ArrayLike] = None):
-    d = data.shape[1]
-    # # options = dict(dtype=data.dtype, device=data.device)
-    # # Vector of variances for each of the d variables
-    # theta = numpyro.sample("theta", HalfCauchy(jnp.ones(d)))
-    # # Lower cholesky factor of a correlation matrix
-    # concentration = jnp.ones(())  # Implies a uniform distribution over correlation matrices
-    # print('concentration', concentration)
-    # L_omega = numpyro.sample("L_omega", LKJCholesky(d, concentration))
-    # print('theta', theta)
-    # print('L_omega', L_omega)
-    # # Lower cholesky factor of the covariance matrix
-    # L_Omega = jnp.matmul(jnp.diag(jnp.sqrt(theta)), L_omega)
-    # # For inference with SVI, one might prefer to use torch.bmm(theta.sqrt().diag_embed(), L_omega)
-    # print('L_Omega', L_Omega)
-
-
-    # # Vector of expectations
-    # mu = np.zeros(d)
-
-    with numpyro.plate("beta_plate", k_hypotheses-1):
-        beta = numpyro.sample("beta", Beta(1, alpha))
-
-    with numpyro.plate("prob_plate", k_hypotheses):
-        # options = dict(dtype=data.dtype, device=data.device)
-        # Vector of variances for each of the d variables
-        # theta = numpyro.sample("theta", HalfCauchy(jnp.ones(d)))
-        # # Lower cholesky factor of a correlation matrix
-        # L_omega = numpyro.sample("L_omega", LKJCholesky(d, .5))
-        # # print('theta', theta)
-        # # print('L_omega', L_omega)
-        # # Lower cholesky factor of the covariance matrix
-        # L_Omega = jnp.matmul(jnp.diag(jnp.sqrt(theta)), L_omega)
-        # # For inference with SVI, one might prefer to use torch.bmm(theta.sqrt().diag_embed(), L_omega)
-        # # print('L_Omega', L_Omega)
-        # # print('cov_est', cov_est)
-        # mu = np.zeros(d)if gamma_shape is None:
-        gamma_shape, gamma_rate = method_moments_estimator_gamma_shape_rate(data=data)
-
-        scale = numpyro.sample("dirichlet_concentration", Gamma(gamma_shape, gamma_rate))
-
-        # d = Gamma(1, 1).expand([data.shape[1]]).to_event(1)
-        # scale = numpyro.sample('scale', d)
-
-        # Sample the correlation matrix.
-        d = LKJCholesky(data.shape[1], .25)
-        cholesky_corr = numpyro.sample('cholesky_corr', d)
-
-        # Evaluate the Cholesky decomposition of the covariance matrix.
-        cholesky_cov = cholesky_corr * jnp.sqrt(scale[:, None])
-        # print('cholesky_cov', cholesky_cov)
-        logtheta = numpyro.sample("logtheta", MultivariateNormal(0, scale_tril=cholesky_cov))
-        probs = jax.nn.softmax(logtheta, -1)
-        # theta = jnp.exp(logtheta)
-        # print('probs', probs)
-
-    with numpyro.plate("data", data.shape[0]):
-        z = numpyro.sample("z", Categorical(mix_weights(beta)), infer={"enumerate": "parallel"})
-        return numpyro.sample("obs", Multinomial(probs=probs[z]), obs=data)
-
 def model(data: ArrayLike, num_data: int, N: ArrayLike, prior_pop_af: float,
                                   dirichlet_min_ll: float = -20,
                                   multinomial_min_ll: float = -200,
