@@ -1,5 +1,7 @@
-# Will be cleaned up once likelihood modeling experiments are concluded.
+# Readme
 
+Identify the risk a gene confers to diseases, and the genetic correlation between diseases, for any number of diseases
 
-# Dealing with label-switching
-In keeping with (need citation) use a single chain. Could do better here, future research
+### Installation
+
+source .init-conda-env.sh
