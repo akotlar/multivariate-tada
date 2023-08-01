@@ -1,3 +1,4 @@
+import jax.numpy as jnp
 import genData2
 import jax.numpy as jnp
 from torch import tensor
@@ -59,6 +60,6 @@ print('a',dist.log_prob(jnp.ones(4)))
 
 
 model = MultiVariateTada()
-model.fit(sim_data_point_pv['alt_counts'])
+model.fit(jnp.array(sim_data_point_pv['alt_counts']))
 
 
