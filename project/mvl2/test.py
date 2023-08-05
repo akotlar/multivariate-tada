@@ -56,7 +56,7 @@ print('_____________________')
 print('_____________________')
 
 dist = ProductPoisson(jnp.ones(4))
-print('a',dist.log_prob(jnp.ones(4)))
+#print('a',dist.log_prob(jnp.ones(4)))
 
 
 model = MultiVariateTada()
