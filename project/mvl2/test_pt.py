@@ -6,7 +6,7 @@ rand.seed(2021)
 
 N = 10000
 p = 8
-K = 3
+K = 2
 
 Z_true = rand.randint(K,size=N)
 Lambda = rand.randint(50,size=(K,p))

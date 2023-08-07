@@ -153,9 +153,9 @@ class MVTadaPT(object):
         tops : dict
         """
         default_options = {
-            "n_iterations": 100000,
+            "n_iterations": 300000,
             "batch_size": 200,
-            "learning_rate": 1e-4,
+            "learning_rate": 5e-5,
         }
         tops = deepcopy(default_options)
         tops.update(training_options)
