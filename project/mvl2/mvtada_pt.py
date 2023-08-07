@@ -5,6 +5,7 @@ from tqdm import trange
 from torch import nn
 from torch.distributions import Dirichlet
 from copy import deepcopy
+import scipy.stats as st
 
 
 class MVTadaPT(object):
@@ -48,12 +49,6 @@ class MVTadaPT(object):
         softplus = nn.Softplus()
 
         myrange = trange if progress_bar else range
-        print(type(X))
-        print(X.dtype)
-        print(lambda_latent.dtype)
-        print(pi_logits.dtype)
-        #print(type(lambda_latent))
-        #print(type(pi_logits))
 
         for i in myrange(td["n_iterations"]):
             idx = rand.choice(N, td["batch_size"], replace=False)
@@ -95,6 +90,45 @@ class MVTadaPT(object):
         self.Lambda = Lambda_.detach().numpy()
         self.pi = pi_.detach().numpy()
 
+    def predict(self, data):
+        """
+
+        Parameters
+        ----------
+        data : np.array-like,shape=(N_variants,n_phenotypes)
+            The data of counts, variants x phenotypes
+
+        Returns
+        -------
+        z_hat : np.array-like,shape=(N_samples,)
+            The cluster identities
+        """
+        log_proba = self.predict_logproba(data)
+        z_hat = np.argmax(log_proba, axis=1)
+        return z_hat
+
+    def predict_logproba(self, data):
+        """
+
+        Parameters
+        ----------
+        data : np.array-like,shape=(N_variants,n_phenotypes)
+            The data of counts, variants x phenotypes
+
+        Returns
+        -------
+        z_hat : np.array-like,shape=(N_samples,)
+            The cluster identities
+        """
+        N = data.shape[0]
+        log_proba = np.zeros((N, self.K))
+        for i in range(N):
+            for k in range(self.K):
+                log_proba[i, k] = np.sum(
+                    st.poisson.logpmf(data[i], self.Lambda[k])
+                )
+        return log_proba
+
     def _fill_training_options(self, training_options):
         """
         This fills any relevant parameters for the learning algorithm
@@ -105,7 +139,7 @@ class MVTadaPT(object):
 
         Returns
         -------
-        training_opts : dict
+        tops : dict
         """
         default_options = {
             "n_iterations": 5000,

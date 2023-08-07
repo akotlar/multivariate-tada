@@ -15,3 +15,4 @@ for i in range(N):
 
 model = MVTadaPT()
 model.fit(X.astype(np.float32))
+Z_hat = model.predict(X)
