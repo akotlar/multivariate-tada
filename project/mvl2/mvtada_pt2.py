@@ -6,6 +6,7 @@ from torch import nn
 from torch.distributions import Dirichlet
 from copy import deepcopy
 import scipy.stats as st
+from sklearn.mixture import GaussianMixture
 
 
 class MVTadaPT(object):
@@ -31,7 +32,10 @@ class MVTadaPT(object):
 
         # Initialize variables
         if Lamb_init is None:
-            Lamb_init = 10*rand.randn(K, p).astype(np.float32)
+            model = GaussianMixture(K)
+            model.fit(data)
+            Lamb_init = model.means_.astype(np.float32)
+            #Lamb_init = 10*rand.randn(K, p).astype(np.float32)
         if pi_init is None:
             pi_init = rand.randn(K).astype(np.float32)
         lambda_latent = torch.tensor(Lamb_init, requires_grad=True)
@@ -42,20 +46,21 @@ class MVTadaPT(object):
         m_d = Dirichlet(torch.tensor(np.ones(self.K) * self.K))
 
         optimizer = torch.optim.SGD(
-            trainable_variables, lr=td["learning_rate"], momentum=0.9
+            trainable_variables, lr=td["learning_rate"], momentum=0.99
         )
 
         mse = nn.MSELoss()
+        L1 = nn.L1Loss()
         smax = nn.Softmax()
         softplus = nn.Softplus()
 
         myrange = trange if progress_bar else range
 
+        zeros_lamb = torch.zeros(K,p)
+
         self.losses_likelihoods = np.zeros(td['n_iterations'])
-        print('!!!!!!!!!!!!!!')
-        print('!!!!!!!!!!!!!!')
-        print('!!!!!!!!!!!!!!')
-        print(pi_logits)
+
+        k_mat = torch.tensor(-50*np.ones((td['batch_size'],p)))
 
         for i in myrange(td["n_iterations"]):
             idx = rand.choice(N, td["batch_size"], replace=False)
@@ -75,27 +80,42 @@ class MVTadaPT(object):
             term2 = -5.0 * Lambda_
             loss_prior_lambda = 1 / N * torch.sum(term1 + term2)
 
-            loglikelihood_each = [
-                X_batch * torch.log(Lambda_[k]) - Lambda_[k] for k in range(K)
+            loglikelihood_each = [ 
+                -1*torch.square(X_batch-Lambda_[k]) for k in range(K)
             ]
-            loglikelihood_sum = [torch.sum(mat, axis=1) for mat in loglikelihood_each]
+            #loglikelihood_each = [
+            #    X_batch * torch.log(Lambda_[k]) - Lambda_[k] for k in range(K)
+            #]
+            loglikelihood_each_trunc = [
+                torch.maximum(k_mat,mat) for mat in loglikelihood_each
+            ]
+
+            loglikelihood_sum = [torch.sum(mat, axis=1) for mat in loglikelihood_each]#_trunc]
             loglikelihood_mean = [torch.mean(mat) for mat in loglikelihood_sum]
             loglike_vec = torch.stack(loglikelihood_mean)
             loglike_components = loglike_vec + torch.log(pi_)
             loss_likelihood = -1*torch.logsumexp(loglike_components,0)
+            #loss_likelihood_trunc = torch.minimum(k_mat,loss_likelihood)
             #loss_likelihood = -1 * torch.sum(like_components)
+            
+            loss_sparse = L1(Lambda_,zeros_lamb)
+            #loss_sparse = torch.mean(torch.pow(Lambda_,.5))
+            ns = 10#0
 
             loss = (
                 loss_logits
-                + loss_prior_pi
-                + loss_prior_lambda
+                #+ loss_prior_pi
+                + loss_sparse*ns
+                #+ loss_prior_lambda
                 + loss_likelihood
             )
-            #if i % 500 == 0:
-            #    print(i,loss_likelihood,loss_prior_pi,loss_prior_lambda)
+            if i % 500 == 0:
+                print('_---------------')
+                print(loglikelihood_each[0][0,0])
+                print(i,loss_likelihood,loss_prior_pi,ns*loss_sparse)
                 #print(pi_)
                 #print(pi_logits)
-            #self.losses_likelihoods
+            self.losses_likelihoods[i] = loss_likelihood.detach().numpy()
 
 
             optimizer.zero_grad()
@@ -157,7 +177,7 @@ class MVTadaPT(object):
         tops : dict
         """
         default_options = {
-            "n_iterations": 300000,
+            "n_iterations": 30000,
             "batch_size": 200,
             "learning_rate": 5e-5,
         }
