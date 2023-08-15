@@ -192,6 +192,7 @@ class MVTadaZPoissonEM(object):
         sigmoid = nn.Sigmoid()
 
         data = torch.tensor(X.astype(np.float32))
+        pi_ = 1/K*np.ones(K)
 
         for i in myrange(td["n_iterations"]):
             # Lambda_ = softplus(Lambda_l)
@@ -206,12 +207,12 @@ class MVTadaZPoissonEM(object):
                 term_3 = -0.5 * torch.log(2 * np.pi * data)
                 term_1 = -Lambda_k
                 term_2 = data * torch.log(Lambda_k)
-                log_likelihood_poisson = term1 + term2 + term3
+                log_likelihood_poisson = term_1 + term_2 + term_3
                 log_likelihood_poisson_w = log_likelihood_poisson - torch.log(
                     alpha_k
                 )
                 log_marginal_p = torch.sum(log_likelihood_poisson_w, axis=1)
-                log_0 = (1 - alpha_k) * torch.where(data == 0)
+                log_0 = (1 - alpha_k) * torch.where(data == 0,1,0)
                 log_marginal_0 = torch.sum(log_0, axis=1)
                 log_marginal = log_marginal_0 + log_marginal_p
                 z_probs_k = log_marginal + np.log(pi_[k])
@@ -238,12 +239,12 @@ class MVTadaZPoissonEM(object):
                     term_3 = -0.5 * torch.log(2 * np.pi * data_sub)
                     term_1 = -Lambda_k
                     term_2 = data_sub * torch.log(Lambda_k)
-                    log_likelihood_poisson = term1 + term2 + term3
+                    log_likelihood_poisson = term_1 + term_2 + term_3
                     log_likelihood_poisson_w = (
                         log_likelihood_poisson - torch.log(alpha_k)
                     )
                     log_marginal_p = torch.sum(log_likelihood_poisson_w, axis=1)
-                    log_0 = (1 - alpha_k) * torch.where(data == 0)
+                    log_0 = (1 - alpha_k) * torch.where(data_sub == 0,1,0)
                     log_marginal_0 = torch.sum(log_0, axis=1)
                     log_marginal = log_marginal_0 + log_marginal_p
                     loss = -1 * torch.mean(log_marginal)
