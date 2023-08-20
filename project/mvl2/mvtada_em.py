@@ -1,5 +1,5 @@
 """
-
+This fits a Poisson we can ea
 
 """
 import numpy as np
@@ -11,6 +11,7 @@ from tqdm import trange
 
 import torch
 from torch import nn
+from torch.nn import PoissonNLLLoss
 
 
 class MVTadaPoissonEM(object):
@@ -172,7 +173,7 @@ class MVTadaZPoissonEM(object):
             for i in range(K):
                 Lambda_list_l.append(
                     torch.tensor(
-                        model.means_[i].astype(np.float32), requires_grad=True
+                        1.2*model.means_[i].astype(np.float32)+.1, requires_grad=True
                     )
                 )
         else:
@@ -182,9 +183,14 @@ class MVTadaZPoissonEM(object):
 
         myrange = trange if progress_bar else range
 
+        pct_0 = np.mean(X==0,axis=0)
+        pct_0 = .98*pct_0 + .01
+        pct_0_inv = np.log(pct_0/(1-pct_0))
+
         alpha_list_l = [
-            torch.tensor(-10 * np.ones(p), requires_grad=True) for i in range(K)
+            torch.tensor(pct_0_inv, requires_grad=True) for i in range(K)
         ]
+
 
         mse = nn.MSELoss()
         smax = nn.Softmax()
@@ -193,6 +199,7 @@ class MVTadaZPoissonEM(object):
 
         data = torch.tensor(X.astype(np.float32))
         pi_ = 1/K*np.ones(K)
+        myloss = PoissonNLLLoss(log_input=False,full=True,reduction='none')
 
         for i in myrange(td["n_iterations"]):
             # Lambda_ = softplus(Lambda_l)
@@ -200,21 +207,19 @@ class MVTadaZPoissonEM(object):
             # E step compute most likely categories
             Zprobs = np.zeros((N, K))
             for k in range(K):
-                Lambda_k = softplus(Lambda_list_l[k])
-                alpha_k = sigmoid(alpha_list_l[k])
+                Lambda_k = Lambda_list_l[k]
+                alpha_k = .8*sigmoid(alpha_list_l[k]) # Prob of being 0
 
-                # Poisson_component
-                term_3 = -0.5 * torch.log(2 * np.pi * data)
-                term_1 = -Lambda_k
-                term_2 = data * torch.log(Lambda_k)
-                log_likelihood_poisson = term_1 + term_2 + term_3
-                log_likelihood_poisson_w = log_likelihood_poisson - torch.log(
-                    alpha_k
-                )
-                log_marginal_p = torch.sum(log_likelihood_poisson_w, axis=1)
-                log_0 = (1 - alpha_k) * torch.where(data == 0,1,0)
-                log_marginal_0 = torch.sum(log_0, axis=1)
-                log_marginal = log_marginal_0 + log_marginal_p
+                log_likelihood_poisson = -1*myloss(Lambda_k,data)
+                log_likelihood_poisson_w = log_likelihood_poisson + torch.log(1-alpha_k)
+
+                log_likelihood_0 = torch.log(alpha_k + (1-alpha_k)*torch.exp(-1*Lambda_k))
+                log_likelihood_0_b = torch.broadcast_to(log_likelihood_0,data.shape)
+
+                log_likelihood_point = torch.where(data!=0,log_likelihood_poisson_w,log_likelihood_0_b)
+
+                log_marginal = torch.sum(log_likelihood_point, axis=1)
+
                 z_probs_k = log_marginal + np.log(pi_[k])
                 Zprobs[:, k] = z_probs_k.detach().numpy()
 
@@ -232,38 +237,80 @@ class MVTadaZPoissonEM(object):
                 )
 
                 for j in range(td["n_inner_iterations"]):
-                    Lambda_k = softplus(Lambda_list_l[k])
-                    alpha_k = sigmoid(alpha_list_l[k])
+                    Lambda_k = Lambda_list_l[k]
+                    alpha_k = .8*sigmoid(alpha_list_l[k]) # Prob of being 0
 
-                    # Poisson_component
-                    term_3 = -0.5 * torch.log(2 * np.pi * data_sub)
-                    term_1 = -Lambda_k
-                    term_2 = data_sub * torch.log(Lambda_k)
-                    log_likelihood_poisson = term_1 + term_2 + term_3
-                    log_likelihood_poisson_w = (
-                        log_likelihood_poisson - torch.log(alpha_k)
-                    )
-                    log_marginal_p = torch.sum(log_likelihood_poisson_w, axis=1)
-                    log_0 = (1 - alpha_k) * torch.where(data_sub == 0,1,0)
-                    log_marginal_0 = torch.sum(log_0, axis=1)
-                    log_marginal = log_marginal_0 + log_marginal_p
+                    log_likelihood_poisson = -1*myloss(Lambda_k,data_sub)
+                    log_likelihood_poisson_w = log_likelihood_poisson + torch.log(1-alpha_k)
+
+                    log_likelihood_0 = torch.log(alpha_k + (1-alpha_k)*torch.exp(-1*Lambda_k))
+                    log_likelihood_0_b = torch.broadcast_to(log_likelihood_0,data_sub.shape)
+
+                    log_likelihood_point = torch.where(data_sub!=0,log_likelihood_poisson_w,log_likelihood_0_b)
+
+                    log_marginal = torch.sum(log_likelihood_point, axis=1)
                     loss = -1 * torch.mean(log_marginal)
 
                     optimizer.zero_grad()
                     loss.backward()
                     optimizer.step()
 
+                    Lambda_k.requires_grad_(False)
+                    Lambda_k[Lambda_k<0] = 0
+                    Lambda_k.requires_grad_(True)
+
         self.pi = pi_
-        self.Lambda = np.zeros((K, p))
-        self.Alpha = np.zeros((K, p))
+        self.Lambda = -1000*np.ones((K, p))
+        self.Alpha = -1000*np.ones((K, p))
         for k in range(self.K):
-            Lambda_k = softplus(Lambda_list_l[k])
-            alpha_k = sigmoid(alpha_list_l[k])
+            Lambda_k = Lambda_list_l[k]
+            alpha_k = 0.8*sigmoid(alpha_list_l[k])
 
             self.Lambda[k] = Lambda_k.detach().numpy()
-            self.Alpha[k] = Lambda_k.detach().numpy()
+            self.Alpha[k] = alpha_k.detach().numpy()
 
-            return self
+        return self
+
+    def predict(self, data):
+        """
+
+        Parameters
+        ----------
+        data : np.array-like,shape=(N_variants,n_phenotypes)
+            The data of counts, variants x phenotypes
+
+        Returns
+        -------
+        z_hat : np.array-like,shape=(N_samples,)
+            The cluster identities
+        """
+        log_proba = self.predict_logproba(data)
+        z_hat = np.argmax(log_proba, axis=1)
+        return z_hat
+
+    def predict_logproba(self, data):
+        """
+
+        Parameters
+        ----------
+        data : np.array-like,shape=(N_variants,n_phenotypes)
+            The data of counts, variants x phenotypes
+
+        Returns
+        -------
+        z_hat : np.array-like,shape=(N_samples,)
+            The cluster identities
+        """
+        N = data.shape[0]
+        log_proba = np.zeros((N, self.K))
+        for i in range(N):
+            for k in range(self.K):
+                log_prob_poisson = st.poisson.logpmf(data[i],self.Lambda[k])
+                log_prob_0 = np.log(self.Alpha[k] + (1-self.Alpha[k])*np.exp(-1*self.Lambda[k]))
+                probs = log_prob_poisson.copy()
+                probs[data[i]==0] = log_prob_0[data[i]==0]
+                log_proba[i,k] = np.sum(probs)
+        return log_proba
 
     def _fill_training_options(self, training_options):
         """
@@ -278,9 +325,9 @@ class MVTadaZPoissonEM(object):
         tops : dict
         """
         default_options = {
-            "n_iterations": 100,
+            "n_iterations": 2000,
             "n_inner_iterations": 50,
-            "learning_rate": 1e-3,
+            "learning_rate": 5e-4,
         }
         tops = deepcopy(default_options)
         tops.update(training_options)
