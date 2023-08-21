@@ -15,8 +15,15 @@ from copy import deepcopy
 
 import numpy.typing as npt
 import numpyro
-from numpyro.distributions import Beta, Categorical, Gamma, Poisson
-from numpyro.infer import MCMC, NUTS
+from numpyro.distributions import (
+    Beta,
+    Categorical,
+    Gamma,
+    Poisson,
+    ZeroInflatedPoisson,
+)
+from numpyro.infer import MCMC, NUTS, DiscreteHMCGibbs
+from numpyro.ops.indexing import Vindex
 
 from jax import random
 
@@ -53,8 +60,8 @@ class MultiVariateTada(object):
 
         model = modelPoisson
 
-        kernel = NUTS(
-            model,
+        kernel = NUTS(model,
+        #kernel = DiscreteHMCGibbs(model)
             target_accept_prob=td["target_accept_prob"],
             max_tree_depth=td["max_tree_depth"],
         )
@@ -120,25 +127,46 @@ def modelPoisson(
 
             This results in fewer parameters to estimate, and may perform
 
-            better when the genetic architecture allows for it.
+            better when the genetic architecture allowfrom numpyro.infer import MCMC, NUTS, DiscreteHMCGibbs
+from numpyro.ops.indexing import Vindex
+s for it.
 
     """
 
     with numpyro.plate("beta_plate", k_hypotheses - 1):
         beta = numpyro.sample("beta", Beta(1, alpha))
 
-    with numpyro.plate("lambda_plate", k_hypotheses):
-        lmbda = numpyro.sample(
-            "lambda",
-            Gamma(5.0,5.0)
-        )
+    with numpyro.plate("lambda_plate", k_hypotheses,dim=-2):
+        with numpyro.plate("lambda_plate2", 4,dim=-1):
+        #lmbda = numpyro.sample("lambda", Gamma(5.0*np.ones((4,1)), 5.0*np.ones((4,1))))
+            lmbda = numpyro.sample("lambda", Gamma(5.0, 5.0))
+
+    print('A',lmbda.shape)
 
     pz = numpyro.deterministic("pz", mix_weights(beta))
 
-    with numpyro.plate("individuals", data.shape[1]):
-        with numpyro.plate("data", data.shape[0]):
-            z = numpyro.sample(
-                "z", Categorical(pz), infer={"enumerate": "parallel"}
-            )
-            lmbda_z = lmbda[z]
-            return numpyro.sample("obs", Poisson(lmbda_z), obs=data)
+    with numpyro.plate("individuals", data.shape[0],dim=-2):
+        z = numpyro.sample("z", Categorical(pz))
+        with numpyro.plate('observations',data.shape[1],dim=-1):
+        #with numpyro.plate("data", data.shape[1]):
+        #lmbda_z = Vindex(lmbda)[:,z]
+        #print('>>>>>>>>>>>>>>>')
+        #print('>>>>>>>>>>>>>>>')
+        #print(data.shape)
+        #print(lmbda_z.shape)
+        #print(lmbda.shape)
+        #print(lmbda[:,z].shape)
+        #print(Vindex(lmbda)[z,:].shape)
+        #print(Vindex(lmbda)[:,z].shape)
+        #print('>>>>>>>>>>>>>>>')
+        #print('>>>>>>>>>>>>>>>')
+        #return numpyro.sample("obs",ProductPoisson(lmbda[:z]),obs=data)
+        #return numpyro.sample("obs", 
+        #                        Poisson(jnp.transpose(lmbda[:,z])), obs=data)
+        #return numpyro.sample("obs", 
+        #                        Poisson(lmbda_z), obs=data)
+        #return numpyro.sample("obs", 
+        #                        Poisson(jnp.squeeze(Vindex(lmbda)[z,:])), obs=data)
+            return numpyro.sample("obs", 
+                                Poisson(Vindex(lmbda)[z]), obs=data)
+

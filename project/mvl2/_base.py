@@ -68,6 +68,23 @@ class ProductPoisson(Distribution):
         term3 = -1*jnp.sum(gammaln(value+1))
         return term1 + term2 + term3
 
+class ProductZIPoisson(Distribution):
+    
+    def __init__(self,rates,gates,*args,**kwargs):
+        self.rates = rates
+        self.gates = gates
+        super().__init__(*args, **kwargs)
+
+    def log_prob(self,value):
+        term1 = -1*self.rates
+        term2 = value*jnp.log(self.rates)
+        term3 = -1*gammaln(value+1)
+        log_prob_nonzero = jnp.log1p(-self.gates) + term1 + term2 + term3
+        log_prob = jnp.where(value==0,jnp.log(self.gates + jnp.exp(log_prob_nonzero)),log_prob_nonzero)
+        lp = jnp.sum(log_prob)
+        return lp
+
+
 class ZeroInflatedMultinomial(MultinomialProbs):
     """
 

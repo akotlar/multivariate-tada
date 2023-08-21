@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import genData2
 import jax.numpy as jnp
 from torch import tensor
-from mvtada import MultiVariateTada
+from mvtada import MultiVariateZITada
 from _base import mix_weights, method_moments_estimator_gamma_shape_rate,ProductPoisson
 
 r_p = tensor([[1., 0], [0, 1.]])
@@ -56,10 +56,10 @@ print('_____________________')
 print('_____________________')
 
 dist = ProductPoisson(jnp.ones(4))
-#print('a',dist.log_prob(jnp.ones(4)))
+print('a',dist.log_prob(jnp.ones(4)))
 
 
-model = MultiVariateTada()
+model = MultiVariateZITada()
 model.fit(jnp.array(sim_data_point_pv['alt_counts']))
 
 
