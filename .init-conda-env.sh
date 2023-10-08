@@ -2,8 +2,8 @@
 # Follow https://docs.conda.io/en/latest/miniconda.html to install miniconda
 # Call this using "source .initialize_conda_env.sh"
 # Ray 2.4.0 on Mac OS (arm64) does not have stable 3.11 support, see https://docs.ray.io/en/latest/ray-overview/installation.html
-version="3.10.11"
-env="multivariate-tada"
+version="3.11"
+env="mvt"
 
 source $(conda info --base)/etc/profile.d/conda.sh ; conda activate ; conda activate
 
@@ -22,3 +22,6 @@ find . -name 'requirements.txt' -exec pip install --upgrade -q -r {} \;
 echo -e "\n====                         Installing Python development requirements                 ====\n"
 find . -name 'requirements-dev.txt' -exec pip install --upgrade -q -r {} \;
 echo -e "\n====                                       Done                                         ====\n"
+# Pytorch forces install of cuda12.1 libraries, which won't match the cuda 12.2 libraries we have
+pip install torch==2.1.0
+pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
